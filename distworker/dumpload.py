@@ -1,6 +1,10 @@
 from typing import Callable
+import logging
 import cloudpickle
 
+import distworker.configs.loggingconf
+
+logger = logging.getLogger("dumpload")
 
 class DumpLoad:
     @classmethod
@@ -13,20 +17,20 @@ class DumpLoad:
         try:
             return cloudpickle.dumps(dump_dict)
         except Exception as e:
+            logger.exception("dumpfn") 
             return None
 
     @classmethod
     def loadfn(cls, data: str):
         try:
             dump_dict = cloudpickle.loads(data)
-            print(dump_dict)
             return (
                 dump_dict.get("func", None),
                 dump_dict.get("args", ()),
                 dump_dict.get("kwargs", {}),
             )
         except Exception as e:
-            print(e)
+            logger.exception("loadfn") 
             return None, None, None
 
     @classmethod

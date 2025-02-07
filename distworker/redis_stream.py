@@ -8,15 +8,9 @@ from .dumpload import DumpLoad
 
 logger = logging.getLogger("stream")
 
+
 class RedisStream:
-    def __init__(
-        self,
-        redis,
-        redis_url,
-        task_stream,
-        task_group,
-        maxlen
-    ):
+    def __init__(self, redis, redis_url, task_stream, task_group, maxlen):
         self._redis_url = redis_url
         self._task_stream = task_stream
         self._task_group = task_group
@@ -75,7 +69,6 @@ class RedisStream:
         the_stream = stream
         if not the_stream:
             the_stream = self._task_stream
-        logger.debug(f"Helloooo  {the_stream}")
         try:
             await self._redis.xadd(the_stream, work)
             return True
@@ -83,7 +76,9 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def dequeue_work(self, worker_func: Callable, consumer_id: str, max_work: int = 5):
+    async def dequeue_work(
+        self, worker_func: Callable, consumer_id: str, max_work: int = 5
+    ):
         works = await self._redis.xreadgroup(
             self._task_group, consumer_id, {self._task_stream: ">"}, max_work, 10000
         )
@@ -96,20 +91,17 @@ class RedisStream:
                     self._redis.xack(self._task_stream, self._task_group, message_id)
                     continue
                 ret, ok = await worker_func(message_data[b"work"])
-                if ok == "OK":
-                    if (
-                        b"replystream" in message_data
-                        and await self.enqueue_work(
-                            {"response": DumpLoad.dump(ret)},
-                            message_data[b"replystream"],
-                        )
-                        or b"replystream" not in message_data
-                    ):
-                        await self._redis.xack(
-                            self._task_stream, self._task_group, message_id
-                        )
-                else:
-                    logger.error("Worker failed", message_id)
+                if (
+                    b"replystream" in message_data
+                    and await self.enqueue_work(
+                        {"response": DumpLoad.dump(ret), "status": DumpLoad.dump(ok)},
+                        message_data[b"replystream"],
+                    )
+                    or b"replystream" not in message_data
+                ):
+                    await self._redis.xack(
+                        self._task_stream, self._task_group, message_id
+                    )
         return True
 
     async def dequeue_response(
@@ -117,6 +109,7 @@ class RedisStream:
         stream: str,
         consumer_id: str,
         consumer_group: str,
+        callback: Callable = None,
         max_response: int = 100,
         max_wait=1000,
     ):
@@ -128,9 +121,23 @@ class RedisStream:
         for stream, messages in responses:
             for message in messages:
                 message_id, message_data = message
-                if not message_data or b"response" not in message_data:
+                if (
+                    not message_data
+                    or b"response" not in message_data
+                    and b"status" not in message_data
+                ):
                     continue
                 response = DumpLoad.load(message_data[b"response"])
+                status = DumpLoad.load(message_data[b"status"])
+                if status == "OK":
+                    if callback:
+                        try:
+                            callback(response)
+                        except:
+                            pass
+                else:
+                    print("Execution failed")
+                await self._redis.xack(stream, consumer_group, message_id)
                 logger.debug(f"Response {response}")
 
     async def trim(self):
@@ -142,12 +149,14 @@ class RedisStream:
     async def get(self, key) -> str:
         return self._redis.get(key)
 
+
 async def main():
     a = RedisStream(maxlen=200000)
     for i in range(10):
         a.enqueue_work({"a": i, "b": i * 2})
     a.dequeue_work()
     a.trim()
+
 
 if __name__ == "__main__":
     asyncio.run(main())

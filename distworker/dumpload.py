@@ -6,6 +6,7 @@ import distworker.configs.loggingconf
 
 logger = logging.getLogger("dumpload")
 
+
 class DumpLoad:
     @classmethod
     def dumpfn(cls, func: Callable, /, *args, **kwargs):
@@ -17,7 +18,7 @@ class DumpLoad:
         try:
             return cloudpickle.dumps(dump_dict)
         except Exception as e:
-            logger.exception("dumpfn") 
+            logger.exception("dumpfn")
             return None
 
     @classmethod
@@ -30,7 +31,7 @@ class DumpLoad:
                 dump_dict.get("kwargs", {}),
             )
         except Exception as e:
-            logger.exception("loadfn") 
+            logger.exception("loadfn")
             return None, None, None
 
     @classmethod

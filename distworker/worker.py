@@ -9,6 +9,7 @@ from .redis_stream import RedisStream
 
 logger = logging.getLogger("worker")
 
+
 class Worker:
     def __init__(
         self,
@@ -16,7 +17,7 @@ class Worker:
         redis_url: str = "redis://127.0.0.1:6379",
         task_stream: str = "tasks",
         task_group: str = "taskgroup",
-        pool: Executor = None 
+        pool: Executor = None,
     ):
         self._redis_url = redis_url
         self._task_stream = task_stream
@@ -35,7 +36,7 @@ class Worker:
         redis_url: str = "redis://127.0.0.1:6379",
         task_stream: str = "tasks",
         task_group: str = "taskgroup",
-        pool: Executor = None
+        pool: Executor = None,
     ):
         execpool = pool
         if not execpool:
@@ -43,7 +44,7 @@ class Worker:
 
         redis_client = await RedisStream.create(redis_url, task_stream, task_group)
         return theclass(redis_client, redis_url, task_stream, task_group, execpool)
-    
+
     @staticmethod
     def noexecutor(work_func_task):
         try:
@@ -52,7 +53,8 @@ class Worker:
                 return False, "NOTOK"
             return_data = func(*args, **kwargs)
             return return_data, "OK"
-        except:
+        except Exception as e:
+            logger.exception("execute")
             return False, "NOTOK"
 
     async def __call__(self, work_func):
@@ -60,8 +62,9 @@ class Worker:
             return self.noexecutor(work_func)
         else:
             logger.debug("Run in  pool")
-            return await self._loop.run_in_executor(self._pool, self.noexecutor, work_func)
-             
+            return await self._loop.run_in_executor(
+                self._pool, self.noexecutor, work_func
+            )
 
     async def do_work(self, consumer_id: str | None = None):
         my_id = consumer_id
@@ -71,4 +74,3 @@ class Worker:
         while True:
             logger.debug("Getting work")
             await self._redis_stream.dequeue_work(self, my_id)
-

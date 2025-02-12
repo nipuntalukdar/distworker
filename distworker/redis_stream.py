@@ -16,6 +16,7 @@ class RedisStream:
         self._task_group = task_group
         self._maxlen = maxlen
         self._redis = redis
+        self._response_handlers = {}
 
     @classmethod
     async def create(
@@ -65,14 +66,18 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def enqueue_work(self, work: dict, stream: str = None) -> bool:
+    async def enqueue_work(
+        self, work: dict, stream: str = None, resp_handler=None
+    ) -> bool:
         the_stream = stream
         if not the_stream:
             the_stream = self._task_stream
         try:
             await self._redis.xadd(the_stream, work)
+            if resp_handler:
+                self._response_handlers[work["local_id"]] = resp_handler
             return True
-        except Exception as e:
+        except Exception:
             logger.exception("error")
             return False
 
@@ -94,7 +99,11 @@ class RedisStream:
                 if (
                     b"replystream" in message_data
                     and await self.enqueue_work(
-                        {"response": DumpLoad.dump(ret), "status": DumpLoad.dump(ok)},
+                        {
+                            "response": DumpLoad.dump(ret),
+                            "status": DumpLoad.dump(ok),
+                            "local_id": message_data[b"local_id"],
+                        },
                         message_data[b"replystream"],
                     )
                     or b"replystream" not in message_data
@@ -125,18 +134,26 @@ class RedisStream:
                     not message_data
                     or b"response" not in message_data
                     and b"status" not in message_data
+                    and b"local_id" not in message_data
                 ):
                     continue
                 response = DumpLoad.load(message_data[b"response"])
                 status = DumpLoad.load(message_data[b"status"])
+                local_id = message_data[b"local_id"].decode()
                 if status == "OK":
-                    if callback:
+                    if local_id in self._response_handlers:
+                        try:
+                            self._response_handlers[local_id](response)
+                            del self._response_handlers[local_id]
+                        except:
+                            pass
+                    elif callback:
                         try:
                             callback(response)
                         except:
                             pass
                 else:
-                    print("Execution failed")
+                    logger.error("Execution failed")
                 await self._redis.xack(stream, consumer_group, message_id)
                 logger.debug(f"Response {response}")
 

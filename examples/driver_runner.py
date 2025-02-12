@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 import pandas as pd
 from random import randint
 import logging
@@ -11,8 +12,7 @@ logger = logging.getLogger("driver")
 
 
 def my_fun(x: int, y: int) -> int:
-    df = pd.read_csv("/tmp/aa.csv")
-    return df["price"].max()
+    return x + y
 
 
 def my_response_hanlder(resp):
@@ -25,7 +25,9 @@ async def main():
 
     for i in range(100):
         work = DumpLoad.dumpfn(my_fun, *(randint(1, 100), randint(2, 300)), **{})
-        await rs.enqueue_work({"work": work, "replystream": "astream"})
+        await rs.enqueue_work(
+            {"work": work, "replystream": "astream", "local_id": uuid.uuid4().hex}
+        )
     logging.info("Getting response")
     while True:
         await rs.dequeue_response("astream", "c1", "agroup", my_response_hanlder)

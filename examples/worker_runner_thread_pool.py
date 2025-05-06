@@ -1,8 +1,8 @@
 import asyncio
 import logging
 from concurrent.futures import ThreadPoolExecutor
-import distworker.configs.loggingconf
-from distworker import *
+
+from distworker import worker
 
 
 async def main():

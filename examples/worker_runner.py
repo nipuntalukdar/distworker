@@ -1,7 +1,7 @@
 import asyncio
 import logging
-import distworker.configs.loggingconf
-from distworker import *
+
+from distworker import worker
 
 
 async def main():

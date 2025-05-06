@@ -1,9 +1,10 @@
-from typing import Callable
+import asyncio
 import logging
+from typing import Callable
+
 import redis.asyncio as redis
 from redis.exceptions import ResponseError
 
-import distworker.configs.loggingconf
 from .dumpload import DumpLoad
 
 logger = logging.getLogger("stream")
@@ -33,7 +34,7 @@ class RedisStream:
             if str(e) != "BUSYGROUP Consumer Group name already exists":
                 logger.exception("error")
                 exit(1)
-        except Exception as e:
+        except Exception:
             logger.exception("error")
             exit(1)
         return cls(redis_client, redis_url, task_stream, task_group, maxlen)
@@ -51,7 +52,7 @@ class RedisStream:
             if "BUSYGROUP Consumer Group name already exists" not in str(e):
                 logger.exception("error")
                 exit(1)
-        except Exception as e:
+        except Exception:
             logger.exception("error")
             exit(1)
 
@@ -62,7 +63,7 @@ class RedisStream:
                 pipe.delete(key)
                 pipe.execute()
             return True
-        except Exception as e:
+        except Exception:
             logger.exception("error")
             return False
 
@@ -160,7 +161,7 @@ class RedisStream:
     async def trim(self):
         try:
             await self._redis.xtrim(self._task_stream, self._maxlen)
-        except Exception as e:
+        except Exception:
             logger.exception("error")
 
     async def get(self, key) -> str:

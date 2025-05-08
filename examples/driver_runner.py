@@ -117,8 +117,10 @@ async def main(consumer_grp: str, reply_stream: str):
         await response_task
         await inpu_task
     except KeyboardInterrupt:
+        logger.exception("KeyboardInterrupt")
         handle_error_interrupt()
     except Exception:
+        logger.exception("error")
         handle_error_interrupt()
     finally:
         logger.info("Exiting ...")

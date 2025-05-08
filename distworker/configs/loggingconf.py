@@ -1,14 +1,15 @@
-from os import getenv
-import yaml
 import logging
 import logging.config
+from os import getenv
+
+import yaml
 
 LOGGING_CONFIG = {
     "version": 1,
     "disable_existing_loggers": False,
     "formatters": {
         "detailed": {
-            "format": "%(asctime)s [%(levelname)s] %(name)s - %(message)s",
+            "format": "%(asctime)s [%(levelname)s] %(name)s:%(filename)s:%(lineno)d - %(message)s",
             "datefmt": "%Y-%m-%d %H:%M:%S",
         },
         "simple": {

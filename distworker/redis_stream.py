@@ -11,12 +11,12 @@ logger = logging.getLogger("stream")
 
 
 class RedisStream:
-    def __init__(self, redis, redis_url, task_stream, task_group, maxlen):
+    def __init__(self, redis_client, redis_url, task_stream, task_group, maxlen):
         self._redis_url = redis_url
         self._task_stream = task_stream
         self._task_group = task_group
         self._maxlen = maxlen
-        self._redis = redis
+        self._redis: redis.StrictRedis = redis_client
         self._response_handlers = {}
 
     @classmethod
@@ -42,19 +42,35 @@ class RedisStream:
     async def set(self, key: str, value: str):
         return await self._redis.set(key, value)
 
-    async def create_stream(self, key: str, group: str, expiry: int = 86400):
+    async def create_stream(self, key: str, group: str, expiry: int = 86400) -> bool:
         try:
             async with self._redis.pipeline() as pipe:
                 pipe.xgroup_create(key, group, mkstream=True)
                 pipe.expire(key, expiry)
-                await pipe.execute()
-        except ResponseError as e:
-            if "BUSYGROUP Consumer Group name already exists" not in str(e):
-                logger.exception("error")
-                exit(1)
+                results = await pipe.execute(raise_on_error=False)
+                for result in results:
+                    if isinstance(result, bool) and not result:
+                        logger.error("Pipeline execute")
+                        return False
+                    elif isinstance(result, ResponseError):
+                        if (
+                            str(result)
+                            != "BUSYGROUP Consumer Group name already exists"
+                        ):
+                            return False
+                        return False
+                return True
         except Exception:
             logger.exception("error")
-            exit(1)
+            return False
+
+    async def add_to_hset(self, hkey, key, val):
+        try:
+            await self._redis.hset(hkey, key, val)
+        except Exception:
+            logger.exception("error")
+            return False
+        return True
 
     async def del_stream_group(self, key: str, group: str) -> bool:
         try:
@@ -166,6 +182,14 @@ class RedisStream:
 
     async def get(self, key) -> str:
         return self._redis.get(key)
+
+    async def del_hkey(self, hkey, subkey):
+        try:
+            await self._redis.hdel(hkey, subkey)
+            return True
+        except Exception:
+            logger.exception(f"Key deleting issue: {hkey} {subkey}")
+            return False
 
 
 async def main():

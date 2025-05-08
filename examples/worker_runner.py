@@ -1,12 +1,11 @@
 import asyncio
 import logging
 
-from distworker import worker
+from distworker import worker_runner
 
 
 async def main():
-    actor = await worker.Worker.create()
-    await actor.do_work("c1")
+    await worker_runner.main()
 
 
 if __name__ == "__main__":

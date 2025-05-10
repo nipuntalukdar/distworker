@@ -2,6 +2,7 @@ import asyncio
 import logging
 import secrets
 import sys
+import time
 import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor
 
@@ -54,7 +55,11 @@ class Worker:
             execpool = ProcessPoolExecutor()
 
         redis_client = await RedisStream.create(redis_url, task_stream, task_group)
-        await redis_client.add_to_hset(register_key, myid, get_packages_base64())
+        success = await Worker.register(redis_client, register_key, myid)
+        if not success:
+            logger.critical("Failed to register")
+            sys.exit(1)
+
         return theclass(
             redis_client,
             redis_url,
@@ -64,6 +69,16 @@ class Worker:
             pool=execpool,
             myid=myid,
         )
+
+    @staticmethod
+    async def register(redis_client, registry_key, myid):
+        thistime = int(time.time())
+        data = get_packages_base64(extrainfo={"time": thistime})
+        success = await redis_client.add_to_hset(registry_key, myid, data)
+        if not success:
+            logger.error("Failed to send heartbeat")
+            return False
+        return True
 
     @staticmethod
     def noexecutor(work_func_task):
@@ -84,13 +99,7 @@ class Worker:
         while True:
             try:
                 await asyncio.sleep(interval)
-                thistime = asyncio.get_event_loop().time()
-                data = get_packages_base64(extrainfo={"time": thistime})
-                success = await self._redis_stream.add_to_hset(
-                    self._registry, self._myid, data
-                )
-                if not success:
-                    logger.error("Failed to send heartbeat")
+                await Worker.register(self._redis_stream, self._registry, self._myid)
             except asyncio.CancelledError:
                 logger.error("Heartbeat task cancelled")
             except Exception:

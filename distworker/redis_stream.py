@@ -99,7 +99,7 @@ class RedisStream:
             return False
 
     async def dequeue_work(
-        self, worker_func: Callable, consumer_id: str, max_work: int = 5
+        self, worker_func: Callable, consumer_id: str, max_work: int = 20
     ):
         works = await self._redis.xreadgroup(
             self._task_group, consumer_id, {self._task_stream: ">"}, max_work, 10000
@@ -137,10 +137,10 @@ class RedisStream:
         consumer_group: str,
         callback: Callable = None,
         max_response: int = 100,
-        max_wait=1000,
+        max_wait=10000,
     ):
         responses = await self._redis.xreadgroup(
-            consumer_group, consumer_id, {stream: ">"}, max_wait, max_response, True
+            consumer_group, consumer_id, {stream: ">"}, max_response, max_wait, False
         )
         if not responses:
             return True
@@ -162,12 +162,12 @@ class RedisStream:
                         try:
                             self._response_handlers[local_id](response)
                             del self._response_handlers[local_id]
-                        except:
+                        except Exception:
                             pass
                     elif callback:
                         try:
                             callback(response)
-                        except:
+                        except Exception:
                             pass
                 else:
                     logger.error("Execution failed")

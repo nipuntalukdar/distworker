@@ -1,0 +1,4 @@
+{
+  "heartbeat_interval": 10,
+  "max_tasks_in_queue": 10
+}

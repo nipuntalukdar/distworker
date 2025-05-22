@@ -1,9 +1,16 @@
 import asyncio
 import logging
-from typing import Callable
+from typing import Callable, Self
 
 import redis.asyncio as redis
-from redis.exceptions import ResponseError
+from redis.backoff import ExponentialBackoff
+from redis.exceptions import (
+    BusyLoadingError,
+    ConnectionError,
+    ResponseError,
+    TimeoutError,
+)
+from redis.retry import Retry
 
 from .dumpload import DumpLoad
 
@@ -26,8 +33,23 @@ class RedisStream:
         task_stream="tasks",
         task_group="taskgroup",
         maxlen=1000000,
-    ):
-        redis_client = await redis.StrictRedis.from_url(redis_url)
+    ) -> Self:
+        retry_strategy = Retry(
+            ExponentialBackoff(
+                cap=5, base=0.1
+            ),  # Max 5 seconds delay, starts with 0.1s
+            retries=20,  # Try up to 20 times
+            supported_errors=(ConnectionError, TimeoutError, BusyLoadingError),
+        )
+        retry_on_errors = [ConnectionError, TimeoutError, BusyLoadingError]
+        redis_client = await redis.StrictRedis.from_url(
+            redis_url,
+            retry=retry_strategy,
+            retry_on_error=retry_on_errors,
+            socket_connect_timeout=10,
+            socket_timeout=5,
+            health_check_interval=30,
+        )
         try:
             await redis_client.xgroup_create(task_stream, task_group, mkstream=True)
         except ResponseError as e:
@@ -64,9 +86,15 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def add_to_hset(self, hkey, key, val):
+    async def add_to_hset(self, hkey, key, val, expiretime=0):
         try:
-            await self._redis.hset(hkey, key, val)
+            if expiretime > 0:
+                async with self._redis.pipeline() as pipe:
+                    pipe.hset(hkey, key, val)
+                    pipe.hexpire(hkey, expiretime, key)
+                    await pipe.execute()
+            else:
+                await self._redis.hset(hkey, key, val)
         except Exception:
             logger.exception("error")
             return False
@@ -101,9 +129,13 @@ class RedisStream:
     async def dequeue_work(
         self, worker_func: Callable, consumer_id: str, max_work: int = 20
     ):
-        works = await self._redis.xreadgroup(
-            self._task_group, consumer_id, {self._task_stream: ">"}, max_work, 10000
-        )
+        works = None
+        try:
+            works = await self._redis.xreadgroup(
+                self._task_group, consumer_id, {self._task_stream: ">"}, max_work, 10000
+            )
+        except TimeoutError:
+            await asyncio.sleep(0.01)
         if not works:
             return True
         for stream, messages in works:
@@ -139,9 +171,18 @@ class RedisStream:
         max_response: int = 100,
         max_wait=10000,
     ):
-        responses = await self._redis.xreadgroup(
-            consumer_group, consumer_id, {stream: ">"}, max_response, max_wait, False
-        )
+        responses = None
+        try:
+            responses = await self._redis.xreadgroup(
+                consumer_group,
+                consumer_id,
+                {stream: ">"},
+                max_response,
+                max_wait,
+                False,
+            )
+        except TimeoutError:
+            await asyncio.sleep(0.01)
         if not responses:
             return True
         for stream, messages in responses:

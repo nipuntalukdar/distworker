@@ -18,21 +18,31 @@ logger = logging.getLogger("stream")
 
 
 class RedisStream:
-    def __init__(self, redis_client, redis_url, task_stream, task_group, maxlen):
+    def __init__(
+        self,
+        redis_client: redis.Redis,
+        redis_url: str,
+        task_stream: str,
+        task_group: str,
+        maxlen: int,
+        worker_response_queue: asyncio.Queue = None,
+    ):
         self._redis_url = redis_url
         self._task_stream = task_stream
         self._task_group = task_group
         self._maxlen = maxlen
         self._redis: redis.StrictRedis = redis_client
         self._response_handlers = {}
+        self._worker_response_queue = worker_response_queue
 
     @classmethod
     async def create(
         cls,
-        redis_url="redis://127.0.0.1:6379",
-        task_stream="tasks",
-        task_group="taskgroup",
-        maxlen=1000000,
+        redis_url: str = "redis://127.0.0.1:6379",
+        task_stream: str = "tasks",
+        task_group: str = "taskgroup",
+        maxlen: int = 1000000,
+        worker_response_queue: asyncio.Queue = None,
     ) -> Self:
         retry_strategy = Retry(
             ExponentialBackoff(
@@ -46,9 +56,9 @@ class RedisStream:
             redis_url,
             retry=retry_strategy,
             retry_on_error=retry_on_errors,
-            socket_connect_timeout=10,
-            socket_timeout=5,
-            health_check_interval=30,
+            socket_connect_timeout=20,
+            socket_timeout=20,
+            health_check_interval=40,
         )
         try:
             await redis_client.xgroup_create(task_stream, task_group, mkstream=True)
@@ -63,6 +73,9 @@ class RedisStream:
 
     async def set(self, key: str, value: str):
         return await self._redis.set(key, value)
+
+    def set_response_queue(self, queue: asyncio.Queue):
+        self._worker_response_queue = queue
 
     async def create_stream(self, key: str, group: str, expiry: int = 86400) -> bool:
         try:
@@ -85,6 +98,30 @@ class RedisStream:
         except Exception:
             logger.exception("error")
             return False
+
+    async def response_processor(self):
+        while True:
+            (
+                ret,
+                ok,
+                replystream,
+                local_id,
+                message_id,
+            ) = await self._worker_response_queue.get()
+
+            if (
+                replystream
+                and await self.enqueue_work(
+                    {
+                        "response": DumpLoad.dump(ret),
+                        "status": DumpLoad.dump(ok),
+                        "local_id": local_id,
+                    },
+                    replystream,
+                )
+            ) or not replystream:
+                await self._redis.xack(self._task_stream, self._task_group, message_id)
+            self._worker_response_queue.task_done()
 
     async def add_to_hset(self, hkey, key, val, expiretime=0):
         try:
@@ -127,39 +164,41 @@ class RedisStream:
             return False
 
     async def dequeue_work(
-        self, worker_func: Callable, consumer_id: str, max_work: int = 20
+        self,
+        worker_func: Callable,
+        consumer_id: str,
+        max_work: int = 20,
+        max_wait_milli_second=10000,
     ):
         works = None
         try:
             works = await self._redis.xreadgroup(
-                self._task_group, consumer_id, {self._task_stream: ">"}, max_work, 10000
+                self._task_group,
+                consumer_id,
+                {self._task_stream: ">"},
+                max_work,
+                max_wait_milli_second,
             )
         except TimeoutError:
-            await asyncio.sleep(0.01)
+            logger.debug("Read timeout")
         if not works:
+            logger.debug("Did not receive any tasks")
             return True
         for stream, messages in works:
+            logger.debug(f"Num tasks fetched {len(messages)} in stream {stream}")
             for message in messages:
                 message_id, message_data = message
                 if not message_data or b"work" not in message_data:
-                    self._redis.xack(self._task_stream, self._task_group, message_id)
-                    continue
-                ret, ok = await worker_func(message_data[b"work"])
-                if (
-                    b"replystream" in message_data
-                    and await self.enqueue_work(
-                        {
-                            "response": DumpLoad.dump(ret),
-                            "status": DumpLoad.dump(ok),
-                            "local_id": message_data[b"local_id"],
-                        },
-                        message_data[b"replystream"],
-                    )
-                    or b"replystream" not in message_data
-                ):
                     await self._redis.xack(
                         self._task_stream, self._task_group, message_id
                     )
+                    continue
+                await worker_func(
+                    message_data[b"work"],
+                    message_data.get(b"replystream", None),
+                    message_data[b"local_id"],
+                    message_id,
+                )
         return True
 
     async def dequeue_response(

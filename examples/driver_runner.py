@@ -1,9 +1,16 @@
 import asyncio
+import csv
 import logging
+import os
+import random
 import re
 import signal
 import sys
 import uuid
+from time import sleep
+from typing import Dict, Union
+
+import pandas as pd
 
 from distworker.dumpload import DumpLoad
 from distworker.redis_stream import RedisStream
@@ -12,11 +19,52 @@ logger = logging.getLogger("driver")
 keep_running = True
 
 
+def create_tmp_csv(rowc: int, outputfile: str):
+    headers = ["name", "age", "income"]
+    try:
+        with open(outputfile, "wt") as fp:
+            csvwriter = csv.writer(fp)
+            csvwriter.writerow(headers)
+            for i in range(rowc):
+                csvwriter.writerow(
+                    [
+                        f"User {i + 1}",
+                        random.randint(25, 102),
+                        2000 + random.randint(1, 10000),
+                    ]
+                )
+        return True
+    except Exception as e:
+        print(e)
+        return False
+
+
+def max_age_income(user_count: int) -> Union[Dict[str, Dict[str, int]], None]:
+    tempfile = f"/tmp/test_{random.randint(999999, 999999999)}.csv"
+    ret = create_tmp_csv(user_count, tempfile)
+    if not ret:
+        return None
+    df = pd.read_csv(tempfile)
+    max_income_row = df["income"].idxmax()
+    max_income = df.loc[max_income_row, "income"]
+    max_income_user = df.loc[max_income_row, "name"]
+    max_age_row = df["age"].idxmax()
+    max_age = df.loc[max_age_row, "age"]
+    max_age_user = df.loc[max_age_row, "name"]
+    os.remove(tempfile)
+    return {
+        "maxage": {"user": max_age_user, "age": int(max_age)},
+        "maxincome": {"user": max_income_user, "income": int(max_income)},
+    }
+
+
 def my_fun(x: int, y: int) -> int:
     return x + y
 
 
 def my_fun2(num):
+    # simulate a long running task
+    sleep(60)
     return "even" if num % 2 == 0 else "odd"
 
 
@@ -47,7 +95,9 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
     global keep_running
     while keep_running:
         try:
-            logger.info("Enter 'my_fun num1 num2' or 'my_fun2 num' or 'stop' ")
+            logger.info(
+                "Enter 'my_fun num1 num2' or 'my_fun2 num' or 'max_age_income num' or 'stop' "
+            )
             line = await reader.readline()
             line = line.decode("utf-8").strip()
             if not line:
@@ -74,6 +124,19 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                     continue
                 num = int(elems[1])
                 work = DumpLoad.dumpfn(my_fun2, *(num,), **{})
+                await rs.enqueue_work(
+                    {
+                        "work": work,
+                        "replystream": astream,
+                        "local_id": uuid.uuid4().hex,
+                    }
+                )
+            elif elems[0] == "max_age_income":
+                if len(elems) != 2:
+                    logger.error("max_age_income expectcs one number as input")
+                    continue
+                num = int(elems[1])
+                work = DumpLoad.dumpfn(max_age_income, *(num,), **{})
                 await rs.enqueue_work(
                     {
                         "work": work,

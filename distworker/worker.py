@@ -26,6 +26,7 @@ class Worker:
         worker_config: dict = None,
         myid: str = None,
         pool: Executor = None,
+        worker_response_queue: asyncio.Queue = None,
     ):
         self._redis_url: str = redis_url
         self._task_stream: str = task_stream
@@ -36,9 +37,17 @@ class Worker:
         self._loop = None
         self._keep_running = True
         self._current_tasks = 0
+        self._max_wait_milli_second = 10000
         self._max_tasks = os.cpu_count()
         if worker_config:
-            self._max_tasks = worker_config.get("max_tasks_in_queue", self._max_tasks)
+            self._max_tasks = min(
+                worker_config.get("max_tasks_in_queue", self._max_tasks), 256
+            )
+            self._max_wait_milli_second = max(
+                worker_config.get("max_wait_milli_second", 10000), 1000
+            )
+        self._queue = asyncio.Queue(self._max_tasks * 2)
+        self._response_queue = asyncio.Queue(self._max_tasks * 2)
         self._registry: str = register_key
         self._worker_config: dict = worker_config
         if not myid:
@@ -64,7 +73,7 @@ class Worker:
         execpool = pool
         if not execpool:
             execpool = ProcessPoolExecutor()
-
+        logger.debug(f"Redis {redis_url}")
         redis_client: RedisStream = await RedisStream.create(
             redis_url, task_stream, task_group
         )
@@ -75,7 +84,7 @@ class Worker:
             logger.critical("Failed to register")
             sys.exit(1)
 
-        return theclass(
+        worker = theclass(
             redis_client,
             redis_url,
             task_stream,
@@ -85,6 +94,8 @@ class Worker:
             myid=myid,
             worker_config=worker_config,
         )
+        redis_client.set_response_queue(worker._response_queue)
+        return worker
 
     @staticmethod
     async def register(redis_client, registry_key, myid, expiretime):
@@ -107,6 +118,22 @@ class Worker:
         except Exception:
             logger.exception("execute")
             return False, "NOTOK"
+
+    async def get_response(self):
+        while self._keep_running:
+            task, replystream, local_id, message_id = await self._queue.get()
+            result, ok = await task
+            await self._response_queue.put(
+                (result, ok, replystream, local_id, message_id)
+            )
+            self._queue.task_done()
+            self._current_tasks -= 1
+
+    async def response_task(self):
+        for i in range(self._max_tasks):
+            asyncio.create_task(self.get_response())
+        for i in range(self._max_tasks):
+            asyncio.create_task(self._redis_stream.response_processor())
 
     async def heart_beater(self):
         asyncio.create_task(self.send_heartbeat())
@@ -136,20 +163,19 @@ class Worker:
             except Exception:
                 logger.exception("Error")
 
-    async def __call__(self, work_func):
+    async def __call__(self, work_func, replystream, local_id, message_id):
         self._current_tasks += 1
         ret_data = None
+        task = None
         if not self._pool:
             logger.debug("Run in same thread")
             ret_data = self.noexecutor(work_func)
             self._current_tasks -= 1
+            return ret_data
         else:
             logger.debug("Run in  pool")
-            ret_data = await self._loop.run_in_executor(
-                self._pool, self.noexecutor, work_func
-            )
-            self._current_tasks -= 1
-        return ret_data
+            task = self._loop.run_in_executor(self._pool, self.noexecutor, work_func)
+            await self._queue.put((task, replystream, local_id, message_id))
 
     async def do_cleanup(self):
         logger.info(f"Unregistering myself {self._myid}")
@@ -158,16 +184,25 @@ class Worker:
 
     async def do_work(self, consumer_id: str | None = None):
         my_id = consumer_id
+        diag_info_time = time.time()
         if not consumer_id:
             my_id = f"worker_{secrets.token_hex()}"
 
         while self._keep_running:
             logger.debug("Getting work")
             if self._current_tasks >= self._max_tasks:
-                await asyncio.sleep(0.01)
+                if time.time() - diag_info_time > 2:
+                    logger.debug("Completely occupied, not taking new tasks this time")
+                    diag_info_time = time.time()
+                await asyncio.sleep(2)
                 continue
             try:
-                await self._redis_stream.dequeue_work(self, my_id)
+                await self._redis_stream.dequeue_work(
+                    self,
+                    my_id,
+                    self._max_tasks - self._current_tasks,
+                    self._max_wait_milli_second,
+                )
             except asyncio.CancelledError:
                 logger.error("Dequeue work stopping as cancelled")
                 break

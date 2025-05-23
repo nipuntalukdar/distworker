@@ -32,6 +32,7 @@ async def main(
             register_key=register_key, myid=worker_id, worker_config=worker_configs
         )
         await actor.heart_beater()
+        await actor.response_task()
         await actor.do_work(consumer_id)
     finally:
         if actor:

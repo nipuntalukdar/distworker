@@ -1,17 +1,34 @@
+import json
 import logging
-from typing import Dict, List
+import os
+from typing import Dict, List, Optional
 
-import redis
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response, status
 from pydantic import BaseModel
+from redis import Redis
 
 from distworker.utils import get_packages_dict
 
 logger = logging.getLogger("UtilityService")
+api_config_file = os.getenv(
+    "WORKER_CONFIG_FILE", "/usr/share/distworker/api_configs.json"
+)
+
+api_configs = {}
+try:
+    with open(api_config_file, "r") as fp:
+        configs = json.load(fp)
+        api_configs.update(configs)
+except Exception:
+    pass
 
 app = FastAPI()
-redis_client = redis.Redis()
+redis_client: Redis = Redis.from_url(
+    f"redis://{api_configs.get('redis_host', '127.0.0.1')}:{
+        api_configs.get('redis_port', 6379)
+    }"
+)
 
 
 class ErrorResponse(BaseModel):
@@ -26,6 +43,14 @@ class WorkerOne(BaseModel):
 
 class Workers(BaseModel):
     workers: List[WorkerOne]
+
+
+class Tasks(BaseModel):
+    status: Optional[str] = "Could not get task stats"
+    totaltasks: Optional[int] = -1
+    pending: Optional[int] = 0
+    lag: Optional[int] = 0
+    incomplete: Optional[int] = 0
 
 
 @app.get(
@@ -53,5 +78,40 @@ async def get_workers():
         raise HTTPException(status_code=500, detail="Internal server error")
 
 
+@app.get(
+    "/taskstats",
+    response_model=Tasks,
+    responses={500: {"model": ErrorResponse, "detail": "internal server error"}},
+    summary="Get task stats",
+)
+async def get_pending_tasks(response: Response):
+    try:
+        tasks = redis_client.xinfo_groups(api_configs.get("taskstream", "tasks"))
+        for task in tasks:
+            if task["name"].decode("utf-8") != api_configs.get(
+                "taskgroup", "taskgroup"
+            ):
+                continue
+            rettask = Tasks(
+                totaltasks=task["entries-read"],
+                incomplete=task["pending"] + task["lag"],
+                pending=task["pending"],
+                lag=task["lag"],
+                status="Success",
+            )
+            print(rettask)
+            return rettask
+
+    except Exception:
+        logger.exception("Error in getting workers")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    response.status_code = status.HTTP_404_NOT_FOUND
+    return Tasks()
+
+
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8989)
+    uvicorn.run(
+        app,
+        host=api_configs.get("listen_host", "127.0.0.1"),
+        port=api_configs.get("listen_port", 8989),
+    )

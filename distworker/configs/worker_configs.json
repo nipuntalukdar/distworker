@@ -1,4 +1,10 @@
 {
   "heartbeat_interval": 10,
-  "max_tasks_in_queue": 10
+  "max_tasks_in_queue": 16,
+  "max_task_pull": 1,
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "taskstream": "tasks",
+  "taskgroup": "taskgroup",
+  "max_wait_milli_second": 10000
 }

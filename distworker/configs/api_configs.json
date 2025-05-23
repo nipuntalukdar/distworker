@@ -1,0 +1,8 @@
+{
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "taskstream": "tasks",
+  "taskgroup": "taskgroup",
+  "listen_host": "0.0.0.0",
+  "listen_port": 8989
+}

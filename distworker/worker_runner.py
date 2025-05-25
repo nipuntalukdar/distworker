@@ -29,11 +29,15 @@ async def main(
     actor = None
     try:
         actor: Worker = await Worker.create(
-            register_key=register_key, myid=worker_id, worker_config=worker_configs
+            register_key=register_key,
+            myid=worker_id,
+            worker_config=worker_configs,
+            consumer_id=consumer_id,
         )
         await actor.heart_beater()
         await actor.response_task()
-        await actor.do_work(consumer_id)
+        await actor.process_pending()
+        await actor.do_work()
     finally:
         if actor:
             await actor.do_cleanup()

@@ -1,11 +1,11 @@
 import asyncio
 import logging
 import os
-import secrets
 import sys
 import time
 import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor
+from random import randint
 from typing import Self
 
 from .dumpload import DumpLoad
@@ -26,6 +26,7 @@ class Worker:
         worker_config: dict = None,
         myid: str = None,
         pool: Executor = None,
+        consumer_id: str = None,
         worker_response_queue: asyncio.Queue = None,
     ):
         self._redis_url: str = redis_url
@@ -39,12 +40,19 @@ class Worker:
         self._current_tasks = 0
         self._max_wait_milli_second = 10000
         self._max_tasks = os.cpu_count()
+        self._min_idle_time_pending = 100000
+        self._in_process_messages = set()
+        self._consumer_id = consumer_id if consumer_id else self._myid
         if worker_config:
             self._max_tasks = min(
                 worker_config.get("max_tasks_in_queue", self._max_tasks), 256
             )
             self._max_wait_milli_second = max(
                 worker_config.get("max_wait_milli_second", 10000), 1000
+            )
+            self._min_idle_time_pending = max(
+                worker_config.get("min_idle_time_pending", self._min_idle_time_pending),
+                self._min_idle_time_pending,
             )
         self._queue = asyncio.Queue(self._max_tasks * 2)
         self._response_queue = asyncio.Queue(self._max_tasks * 2)
@@ -67,6 +75,7 @@ class Worker:
         task_group: str = "taskgroup",
         pool: Executor = None,
         myid: str = None,
+        consumer_id: str = None,
         register_key: str = "workers",
         worker_config: dict = None,
     ) -> Self:
@@ -77,12 +86,8 @@ class Worker:
         redis_client: RedisStream = await RedisStream.create(
             redis_url, task_stream, task_group
         )
-        success = await Worker.register(
-            redis_client, register_key, myid, Worker.get_worker_ttl(worker_config)
-        )
-        if not success:
-            logger.critical("Failed to register")
-            sys.exit(1)
+
+        consumer_id = consumer_id if consumer_id else myid
 
         worker = theclass(
             redis_client,
@@ -92,9 +97,17 @@ class Worker:
             register_key=register_key,
             pool=execpool,
             myid=myid,
+            consumer_id=consumer_id,
             worker_config=worker_config,
         )
         redis_client.set_response_queue(worker._response_queue)
+
+        success = await Worker.register(
+            redis_client, register_key, myid, Worker.get_worker_ttl(worker_config)
+        )
+        if not success:
+            logger.critical("Failed to register")
+            sys.exit(1)
         return worker
 
     @staticmethod
@@ -119,6 +132,9 @@ class Worker:
             logger.exception("execute")
             return False, "NOTOK"
 
+    def is_in_process(self, message_id):
+        return message_id in self._in_process_messages
+
     async def get_response(self):
         while self._keep_running:
             task, replystream, local_id, message_id = await self._queue.get()
@@ -128,6 +144,20 @@ class Worker:
             )
             self._queue.task_done()
             self._current_tasks -= 1
+            self._in_process_messages.remove(message_id)
+
+    async def pending_processing_task(self):
+        logger.debug("Pending work processor started")
+        while self._keep_running:
+            await asyncio.sleep(randint(45, 180))
+            logger.debug("Trying to get pending work")
+            max_work = self._max_tasks - self._current_tasks
+            await self._redis_stream.get_pending_work(
+                self, self._consumer_id, max_work, self._min_idle_time_pending
+            )
+
+    async def process_pending(self):
+        asyncio.create_task(self.pending_processing_task())
 
     async def response_task(self):
         for i in range(self._max_tasks):
@@ -165,6 +195,7 @@ class Worker:
 
     async def __call__(self, work_func, replystream, local_id, message_id):
         self._current_tasks += 1
+        self._in_process_messages.add(message_id)
         ret_data = None
         task = None
         if not self._pool:
@@ -182,11 +213,9 @@ class Worker:
         await self._redis_stream.del_hkey(self._registry, self._myid)
         self._keep_running = False
 
-    async def do_work(self, consumer_id: str | None = None):
-        my_id = consumer_id
+    async def do_work(self):
+        my_consumer_id = self._consumer_id
         diag_info_time = time.time()
-        if not consumer_id:
-            my_id = f"worker_{secrets.token_hex()}"
 
         while self._keep_running:
             logger.debug("Getting work")
@@ -199,7 +228,7 @@ class Worker:
             try:
                 await self._redis_stream.dequeue_work(
                     self,
-                    my_id,
+                    my_consumer_id,
                     self._max_tasks - self._current_tasks,
                     self._max_wait_milli_second,
                 )

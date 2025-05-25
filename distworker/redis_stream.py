@@ -163,6 +163,65 @@ class RedisStream:
             logger.exception("error")
             return False
 
+    async def process_work(self, messages, worker_func, pending=False):
+        for message in messages:
+            message_id, message_data = message
+            logger.debug(
+                f"Processing message, message id {message_id}, pending={pending}"
+            )
+            if not message_data or b"work" not in message_data:
+                await self._redis.xack(self._task_stream, self._task_group, message_id)
+                continue
+            await worker_func(
+                message_data[b"work"],
+                message_data.get(b"replystream", None),
+                message_data[b"local_id"],
+                message_id,
+            )
+
+    async def get_pending_work(
+        self,
+        worker_func: Callable,
+        consumer_id: str,
+        max_work: int = 20,
+        min_idle_time=7200000,
+    ):
+        logger.debug(
+            f"Getting pending tasks with min_idle_time {min_idle_time} for consumer_id {consumer_id}"
+        )
+        try:
+            pending_messages = await self._redis.xpending_range(
+                self._task_stream,
+                self._task_group,
+                "-",
+                "+",
+                max_work,
+                consumer_id,
+                min_idle_time,
+            )
+            if pending_messages:
+                message_ids = [
+                    msg["message_id"]
+                    for msg in pending_messages
+                    if not worker_func.is_in_process(msg["message_id"])
+                ]
+                if message_ids:
+                    messages = await self._redis.xclaim(
+                        self._task_stream,
+                        self._task_group,
+                        consumer_id,
+                        min_idle_time=min_idle_time,
+                        message_ids=message_ids,
+                    )
+                    await self.process_work(messages, worker_func, pending=True)
+            else:
+                logger.debug(
+                    f"No pending tasks with min_idle_time {min_idle_time} for consumer_id {consumer_id}"
+                )
+
+        except Exception:
+            logger.exception("Getting pending work")
+
     async def dequeue_work(
         self,
         worker_func: Callable,
@@ -186,19 +245,7 @@ class RedisStream:
             return True
         for stream, messages in works:
             logger.debug(f"Num tasks fetched {len(messages)} in stream {stream}")
-            for message in messages:
-                message_id, message_data = message
-                if not message_data or b"work" not in message_data:
-                    await self._redis.xack(
-                        self._task_stream, self._task_group, message_id
-                    )
-                    continue
-                await worker_func(
-                    message_data[b"work"],
-                    message_data.get(b"replystream", None),
-                    message_data[b"local_id"],
-                    message_id,
-                )
+            await self.process_work(messages, worker_func)
         return True
 
     async def dequeue_response(

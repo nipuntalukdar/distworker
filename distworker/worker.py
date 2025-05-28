@@ -41,6 +41,7 @@ class Worker:
         self._max_wait_milli_second = 10000
         self._max_tasks = os.cpu_count()
         self._min_idle_time_pending = 100000
+        self._min_idle_time_pending_c_disappeared = 1000000
         self._in_process_messages = set()
         self._consumer_id = consumer_id if consumer_id else self._myid
         if worker_config:
@@ -53,6 +54,13 @@ class Worker:
             self._min_idle_time_pending = max(
                 worker_config.get("min_idle_time_pending", self._min_idle_time_pending),
                 self._min_idle_time_pending,
+            )
+            self._min_idle_time_pending = max(
+                worker_config.get(
+                    "min_idle_time_pending_c_disappeared",
+                    self._min_idle_time_pending_c_disappeared,
+                ),
+                self._min_idle_time_pending_c_disappeared,
             )
         self._queue = asyncio.Queue(self._max_tasks * 2)
         self._response_queue = asyncio.Queue(self._max_tasks * 2)
@@ -149,11 +157,19 @@ class Worker:
     async def pending_processing_task(self):
         logger.debug("Pending work processor started")
         while self._keep_running:
-            await asyncio.sleep(randint(45, 180))
+            await asyncio.sleep(randint(60, 180))
             logger.debug("Trying to get pending work")
             max_work = self._max_tasks - self._current_tasks
+            # roughly every 10th time, try to fetch messages pending for
+            # very long time, because the corresponding consumer might have
+            # been deleted
+            consumer_id = self._consumer_id if randint(1, 10) != 10 else None
+            if consumer_id:
+                min_pending_time = self._min_idle_time_pending
+            else:
+                min_pending_time = self._min_idle_time_pending_c_disappeared
             await self._redis_stream.get_pending_work(
-                self, self._consumer_id, max_work, self._min_idle_time_pending
+                self, consumer_id, max_work, min_pending_time
             )
 
     async def process_pending(self):

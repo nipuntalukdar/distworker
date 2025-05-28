@@ -1,0 +1,10 @@
+{
+  "redis_host": "127.0.0.1",
+  "redis_port": 6379,
+  "taskstream": "tasks",
+  "taskgroup": "taskgroup",
+  "reply_stream": "replystream",
+  "reply_consumer": "replyconsumer",
+  "reply_consumer_group": "reply_consumer_group",
+  "reply_stream_alive_time": 3600
+}

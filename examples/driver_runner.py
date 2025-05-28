@@ -7,6 +7,7 @@ import re
 import signal
 import sys
 import uuid
+from asyncio import Future
 from time import sleep
 from typing import Dict, Union
 
@@ -17,6 +18,7 @@ from distworker.redis_stream import RedisStream
 
 logger = logging.getLogger("driver")
 keep_running = True
+responses_dict: Dict[str, Future] = {}
 
 
 def create_tmp_csv(rowc: int, outputfile: str):
@@ -68,8 +70,11 @@ def my_fun2(num):
     return "even" if num % 2 == 0 else "odd"
 
 
-def my_response_hanlder(resp):
-    logger.info(f"Got the response {resp}")
+def my_response_hanlder(status, resp, local_id):
+    logger.debug(f"Got {status} {resp} {local_id}")
+    fut = responses_dict.pop(local_id, None)
+    if fut:
+        fut.set_result((status, resp))
 
 
 async def process_response(
@@ -111,39 +116,48 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                 num1 = float(elems[1])
                 num2 = float(elems[2])
                 work = DumpLoad.dumpfn(my_fun, *(num1, num2), **{})
-                await rs.enqueue_work(
+                local_id = uuid.uuid4().hex
+                fut = Future()
+                responses_dict[local_id] = fut
+                if await rs.enqueue_work(
                     {
                         "work": work,
                         "replystream": astream,
-                        "local_id": uuid.uuid4().hex,
+                        "local_id": local_id,
                     }
-                )
+                ):
+                    result = await fut
+                    logger.info(f"The result {result}")
             elif elems[0] == "my_fun2":
                 if len(elems) != 2:
                     logger.error("my_fun2 expectcs one number as input")
                     continue
                 num = int(elems[1])
                 work = DumpLoad.dumpfn(my_fun2, *(num,), **{})
-                await rs.enqueue_work(
-                    {
-                        "work": work,
-                        "replystream": astream,
-                        "local_id": uuid.uuid4().hex,
-                    }
-                )
+                local_id = uuid.uuid4().hex
+                fut = Future()
+                responses_dict[local_id] = fut
+                if await rs.enqueue_work(
+                    {"work": work, "replystream": astream, "local_id": local_id}
+                ):
+                    result = await fut
+                    logger.info(f"The result {result}")
+
             elif elems[0] == "max_age_income":
                 if len(elems) != 2:
                     logger.error("max_age_income expectcs one number as input")
                     continue
                 num = int(elems[1])
                 work = DumpLoad.dumpfn(max_age_income, *(num,), **{})
-                await rs.enqueue_work(
-                    {
-                        "work": work,
-                        "replystream": astream,
-                        "local_id": uuid.uuid4().hex,
-                    }
-                )
+                local_id = uuid.uuid4().hex
+                fut = Future()
+                responses_dict[local_id] = fut
+                if await rs.enqueue_work(
+                    {"work": work, "replystream": astream, "local_id": local_id}
+                ):
+                    result = await fut
+                    logger.info(f"The result {result}")
+
             elif elems[0] == "stop":
                 keep_running = False
             else:
@@ -170,7 +184,7 @@ async def main(consumer_grp: str, reply_stream: str):
     for sig in signal.SIGTERM, signal.SIGINT:
         asyncio.get_event_loop().add_signal_handler(sig, handle_error_interrupt)
     try:
-        rs = await RedisStream.create()
+        rs = await RedisStream.create(respone_handler=my_response_hanlder)
         await rs.create_stream(reply_stream, consumer_grp)
         response_task = asyncio.create_task(
             process_response(rs, reply_stream, "c1", consumer_grp)

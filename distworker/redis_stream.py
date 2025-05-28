@@ -25,6 +25,7 @@ class RedisStream:
         task_stream: str,
         task_group: str,
         maxlen: int,
+        respone_handler: Callable = None,
         worker_response_queue: asyncio.Queue = None,
     ):
         self._redis_url = redis_url
@@ -32,7 +33,7 @@ class RedisStream:
         self._task_group = task_group
         self._maxlen = maxlen
         self._redis: redis.StrictRedis = redis_client
-        self._response_handlers = {}
+        self._response_handler: Callable = respone_handler
         self._worker_response_queue = worker_response_queue
 
     @classmethod
@@ -43,6 +44,7 @@ class RedisStream:
         task_group: str = "taskgroup",
         maxlen: int = 1000000,
         worker_response_queue: asyncio.Queue = None,
+        respone_handler: Callable = None,
     ) -> Self:
         retry_strategy = Retry(
             ExponentialBackoff(
@@ -69,10 +71,18 @@ class RedisStream:
         except Exception:
             logger.exception("error")
             exit(1)
-        return cls(redis_client, redis_url, task_stream, task_group, maxlen)
+        return cls(
+            redis_client, redis_url, task_stream, task_group, maxlen, respone_handler
+        )
 
     async def set(self, key: str, value: str):
         return await self._redis.set(key, value)
+
+    async def expire(self, key: str, ttl: int):
+        try:
+            await self._redis.expire(key, ttl)
+        except Exception:
+            logger.exception("Error setting expiry")
 
     def set_response_queue(self, queue: asyncio.Queue):
         self._worker_response_queue = queue
@@ -148,16 +158,12 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def enqueue_work(
-        self, work: dict, stream: str = None, resp_handler=None
-    ) -> bool:
+    async def enqueue_work(self, work: dict, stream: str = None) -> bool:
         the_stream = stream
         if not the_stream:
             the_stream = self._task_stream
         try:
             await self._redis.xadd(the_stream, work)
-            if resp_handler:
-                self._response_handlers[work["local_id"]] = resp_handler
             return True
         except Exception:
             logger.exception("error")
@@ -258,6 +264,9 @@ class RedisStream:
         max_wait=10000,
     ):
         responses = None
+        logger.debug(
+            f"Dequing response stream={stream}, group={consumer_group}, consumer_id={consumer_id}"
+        )
         try:
             responses = await self._redis.xreadgroup(
                 consumer_group,
@@ -270,7 +279,9 @@ class RedisStream:
         except TimeoutError:
             await asyncio.sleep(0.01)
         if not responses:
+            logger.debug("No responses received")
             return True
+        logger.debug("responses received")
         for stream, messages in responses:
             for message in messages:
                 message_id, message_data = message
@@ -285,17 +296,18 @@ class RedisStream:
                 status = DumpLoad.load(message_data[b"status"])
                 local_id = message_data[b"local_id"].decode()
                 if status == "OK":
-                    if local_id in self._response_handlers:
+                    if local_id:
                         try:
-                            self._response_handlers[local_id](response)
-                            del self._response_handlers[local_id]
+                            logger.info("Calling response handler")
+                            self._response_handler(status, response, local_id)
                         except Exception:
-                            pass
+                            logger.exception("Response handling")
                     elif callback:
                         try:
+                            logger.info("Callback for response")
                             callback(response)
                         except Exception:
-                            pass
+                            logger.exception("Callback for response")
                 else:
                     logger.error("Execution failed")
                 await self._redis.xack(stream, consumer_group, message_id)

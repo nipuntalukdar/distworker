@@ -7,5 +7,6 @@
   "taskstream": "tasks",
   "taskgroup": "taskgroup",
   "min_idle_time_pending": 120000,
-  "max_wait_milli_second": 10000
+  "max_wait_milli_second": 10000,
+  "min_idle_time_pending_c_disappeared": 1200000
 }

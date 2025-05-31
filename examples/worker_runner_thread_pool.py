@@ -1,13 +1,18 @@
 import asyncio
 import logging
+import os
 from concurrent.futures import ThreadPoolExecutor
 
-from distworker import worker
+from distworker import worker_runner
 
 
 async def main():
-    actor = await worker.Worker.create(pool=ThreadPoolExecutor())
-    await actor.do_work("c1")
+    thread_poopl = ThreadPoolExecutor(max_workers=16)
+    worker_id = os.getenv("WORKER_ID", "worker1")
+    consumer_id = os.getenv("CONSUMER_ID", "c1")
+    await worker_runner.main(
+        worker_id=worker_id, consumer_id=consumer_id, pool=thread_poopl
+    )
 
 
 if __name__ == "__main__":

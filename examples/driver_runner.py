@@ -9,7 +9,7 @@ import sys
 import uuid
 from asyncio import Future
 from time import sleep
-from typing import Dict, Union
+from typing import Any, Dict, Union
 
 import pandas as pd
 
@@ -70,11 +70,17 @@ def my_fun2(num):
     return "even" if num % 2 == 0 else "odd"
 
 
-def my_response_hanlder(status, resp, local_id):
+def my_response_hanlder(
+    status: str, resp: Any, local_id: str, exception_str: str = None
+):
     logger.debug(f"Got {status} {resp} {local_id}")
     fut = responses_dict.pop(local_id, None)
     if fut:
-        fut.set_result((status, resp))
+        if exception_str:
+            exception = DumpLoad.load(exception_str)
+            fut.set_exception(exception)
+        else:
+            fut.set_result((status, resp, exception_str))
 
 
 async def process_response(

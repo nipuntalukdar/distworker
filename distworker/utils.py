@@ -8,6 +8,21 @@ import pkg_resources
 logger = logging.getLogger("utils")
 
 
+class RemoteException(Exception):
+    def __init__(self, code, message, stack_trace, *args):
+        self._code = code
+        self._message = message
+        self._custom_stack_strace = stack_trace
+        super().__init__(code, message, stack_trace, *args)
+
+    def __str__(self):
+        return f"""RemoteException: {self._code}
+        {self._message}
+        {self._custom_stack_strace}"""
+
+    __repr__ = __str__
+
+
 def get_packages() -> Dict[str, str]:
     ret: Dict[str, str] = {}
     for pkg in pkg_resources.working_set:

@@ -51,9 +51,19 @@ class RedisStream:
                 cap=5, base=0.1
             ),  # Max 5 seconds delay, starts with 0.1s
             retries=20,  # Try up to 20 times
-            supported_errors=(ConnectionError, TimeoutError, BusyLoadingError),
+            supported_errors=(
+                ConnectionError,
+                TimeoutError,
+                BusyLoadingError,
+                ConnectionRefusedError,
+            ),
         )
-        retry_on_errors = [ConnectionError, TimeoutError, BusyLoadingError]
+        retry_on_errors = [
+            ConnectionError,
+            TimeoutError,
+            BusyLoadingError,
+            ConnectionRefusedError,
+        ]
         redis_client = await redis.StrictRedis.from_url(
             redis_url,
             retry=retry_strategy,
@@ -62,15 +72,25 @@ class RedisStream:
             socket_timeout=20,
             health_check_interval=40,
         )
-        try:
-            await redis_client.xgroup_create(task_stream, task_group, mkstream=True)
-        except ResponseError as e:
-            if str(e) != "BUSYGROUP Consumer Group name already exists":
+        connection_attempts = 10
+        for i in range(connection_attempts):
+            try:
+                await redis_client.xgroup_create(task_stream, task_group, mkstream=True)
+            except (ConnectionRefusedError, ConnectionError):
+                logger.error("Unable to connect to Redis")
+                if i == connection_attempts - 1:
+                    logger.error("Unable to connect to Redis, giving up ...")
+                    return None
+                else:
+                    await asyncio.sleep(3)
+                    continue
+            except ResponseError as e:
+                if str(e) != "BUSYGROUP Consumer Group name already exists":
+                    logger.exception("error")
+                    return None
+            except Exception:
                 logger.exception("error")
-                exit(1)
-        except Exception:
-            logger.exception("error")
-            exit(1)
+                return None
         return cls(
             redis_client, redis_url, task_stream, task_group, maxlen, respone_handler
         )
@@ -114,10 +134,15 @@ class RedisStream:
             (
                 ret,
                 ok,
+                exception_str,
                 replystream,
                 local_id,
                 message_id,
             ) = await self._worker_response_queue.get()
+            exception = True if exception_str else False
+            logger.debug(
+                f"Response from queue = {ret}, {ok}, {replystream}, {local_id}, {exception}"
+            )
 
             if (
                 replystream
@@ -126,6 +151,7 @@ class RedisStream:
                         "response": DumpLoad.dump(ret),
                         "status": DumpLoad.dump(ok),
                         "local_id": local_id,
+                        "exception_str": exception_str,
                     },
                     replystream,
                 )
@@ -163,6 +189,9 @@ class RedisStream:
         if not the_stream:
             the_stream = self._task_stream
         try:
+            if not work.get("exception_str", None):
+                # Remove empty or None value as None will cause xadd to fail
+                work.pop("exception_str", None)
             await self._redis.xadd(the_stream, work)
             return True
         except Exception:
@@ -295,21 +324,21 @@ class RedisStream:
                 response = DumpLoad.load(message_data[b"response"])
                 status = DumpLoad.load(message_data[b"status"])
                 local_id = message_data[b"local_id"].decode()
-                if status == "OK":
-                    if local_id:
-                        try:
-                            logger.info("Calling response handler")
-                            self._response_handler(status, response, local_id)
-                        except Exception:
-                            logger.exception("Response handling")
-                    elif callback:
-                        try:
-                            logger.info("Callback for response")
-                            callback(response)
-                        except Exception:
-                            logger.exception("Callback for response")
-                else:
-                    logger.error("Execution failed")
+                exception_str = message_data.get(b"exception_str", None)
+                if local_id:
+                    try:
+                        logger.info("Calling response handler")
+                        self._response_handler(
+                            status, response, local_id, exception_str
+                        )
+                    except Exception:
+                        logger.exception("Response handling")
+                elif callback:
+                    try:
+                        logger.info("Callback for response")
+                        callback(response)
+                    except Exception:
+                        logger.exception("Callback for response")
                 await self._redis.xack(stream, consumer_group, message_id)
                 logger.debug(f"Response {response}")
 

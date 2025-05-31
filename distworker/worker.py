@@ -3,6 +3,7 @@ import logging
 import os
 import sys
 import time
+import traceback
 import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor
 from random import randint
@@ -10,7 +11,7 @@ from typing import Self
 
 from .dumpload import DumpLoad
 from .redis_stream import RedisStream
-from .utils import get_packages_base64
+from .utils import RemoteException, get_packages_base64
 
 logger = logging.getLogger("worker")
 
@@ -94,7 +95,9 @@ class Worker:
         redis_client: RedisStream = await RedisStream.create(
             redis_url, task_stream, task_group
         )
-
+        if not redis_client:
+            logger.error("Unable to get redis client")
+            return None
         consumer_id = consumer_id if consumer_id else myid
 
         worker = theclass(
@@ -133,12 +136,15 @@ class Worker:
         try:
             func, args, kwargs = DumpLoad.loadfn(work_func_task)
             if not func:
-                return False, "NOTOK"
+                return False, "NOTOK", None
             return_data = func(*args, **kwargs)
-            return return_data, "OK"
-        except Exception:
-            logger.exception("execute")
-            return False, "NOTOK"
+            return return_data, "OK", None
+        except Exception as e:
+            logger.exception("Execution failed")
+            traceback_str = traceback.format_exc(10)
+            re = RemoteException(type(e), e.__str__(), traceback_str)
+            exception_bytes = DumpLoad.dump(re)
+            return None, "NOTOK", exception_bytes
 
     def is_in_process(self, message_id):
         return message_id in self._in_process_messages
@@ -146,9 +152,11 @@ class Worker:
     async def get_response(self):
         while self._keep_running:
             task, replystream, local_id, message_id = await self._queue.get()
-            result, ok = await task
+            result, ok, exception_str = await task
+            exception = False if not exception_str else True
+            logger.debug(f"Result={result}, ok={ok}, exception={exception}")
             await self._response_queue.put(
-                (result, ok, replystream, local_id, message_id)
+                (result, ok, exception_str, replystream, local_id, message_id)
             )
             self._queue.task_done()
             self._current_tasks -= 1

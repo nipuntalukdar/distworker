@@ -2,6 +2,8 @@ import asyncio
 import json
 import logging
 import os
+from concurrent.futures import Executor
+from typing import Union
 
 from .worker import Worker
 
@@ -24,6 +26,7 @@ async def main(
     worker_id="worker1",
     consumer_id="c1",
     worker_config: dict = None,
+    pool: Union[Executor, None] = None,
 ):
     logging.info("Starting worker")
     actor = None
@@ -33,11 +36,15 @@ async def main(
             myid=worker_id,
             worker_config=worker_configs,
             consumer_id=consumer_id,
+            pool=pool,
         )
-        await actor.heart_beater()
-        await actor.response_task()
-        await actor.process_pending()
-        await actor.do_work()
+        if actor:
+            await actor.heart_beater()
+            await actor.response_task()
+            await actor.process_pending()
+            await actor.do_work()
+        else:
+            logger.error("Startup error")
     finally:
         if actor:
             await actor.do_cleanup()

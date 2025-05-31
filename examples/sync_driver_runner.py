@@ -23,12 +23,18 @@ class MyResponseHandler:
         with self._lock:
             self._futures.pop(local_id, None)
 
-    def __call__(self, status: str, resp: Any, local_id: str):
+    def __call__(
+        self, status: str, resp: Any, local_id: str, exception_str: str = None
+    ):
         with self._lock:
             logger.debug(f"Got {resp} for local_id={local_id}, status={status}")
             fut = self._futures.pop(local_id, None)
             if fut:
-                fut.set_result((status, resp))
+                if exception_str:
+                    exception = DumpLoad.load(exception_str)
+                    fut.set_exception(exception)
+                else:
+                    fut.set_result((status, resp))
 
     def get_result(self, timeout=None):
         return self._future.result(timeout=timeout)
@@ -39,8 +45,8 @@ rs = False
 my_response_hanlder = MyResponseHandler()
 
 
-def my_fun(x: int, y: int) -> int:
-    return x + y
+def my_divide(x: int, y: int) -> int:
+    return x / y
 
 
 async def main():
@@ -77,12 +83,12 @@ def start_event_loop(loop):
 
 def get_input(loop):
     while True:
-        logger.info("Reading input")
+        logger.info("my_divide <num1> / <num2>, Give num1 and num2:  ")
         x = [int(a) for a in input().split()]
         if len(x) < 2:
             logger.error("Give two numbers")
             continue
-        task = DumpLoad.dumpfn(my_fun, *(x[0], x[1]), **{})
+        task = DumpLoad.dumpfn(my_divide, *(x[0], x[1]), **{})
         work = {
             "work": task,
             "replystream": "astream",

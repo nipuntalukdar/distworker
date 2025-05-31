@@ -7,7 +7,7 @@ import traceback
 import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor
 from random import randint
-from typing import Self
+from typing import Any, Self, Union
 
 from .dumpload import DumpLoad
 from .redis_stream import RedisStream
@@ -82,7 +82,7 @@ class Worker:
         redis_url: str = "redis://127.0.0.1:6379",
         task_stream: str = "tasks",
         task_group: str = "taskgroup",
-        pool: Executor = None,
+        pool: Union[Executor, str] = None,
         myid: str = None,
         consumer_id: str = None,
         register_key: str = "workers",
@@ -91,6 +91,13 @@ class Worker:
         execpool = pool
         if not execpool:
             execpool = ProcessPoolExecutor()
+        if not isinstance(execpool, str) and not isinstance(execpool, Executor):
+            logger.error("Invalid value for pool")
+            return None
+        if isinstance(execpool, str) and execpool != "local":
+            logger.error("Incorrect type or value")
+            return None
+
         logger.debug(f"Redis {redis_url}")
         redis_client: RedisStream = await RedisStream.create(
             redis_url, task_stream, task_group
@@ -149,14 +156,27 @@ class Worker:
     def is_in_process(self, message_id):
         return message_id in self._in_process_messages
 
+    async def queue_response(
+        self,
+        result: Union[Any, None],
+        ok: str,
+        exception_str: Union[str, None],
+        replystream: str,
+        local_id: str,
+        message_id: str,
+    ):
+        exception = False if not exception_str else True
+        logger.debug(f"Result={result}, ok={ok}, exception={exception}")
+        await self._response_queue.put(
+            (result, ok, exception_str, replystream, local_id, message_id)
+        )
+
     async def get_response(self):
         while self._keep_running:
             task, replystream, local_id, message_id = await self._queue.get()
             result, ok, exception_str = await task
-            exception = False if not exception_str else True
-            logger.debug(f"Result={result}, ok={ok}, exception={exception}")
-            await self._response_queue.put(
-                (result, ok, exception_str, replystream, local_id, message_id)
+            await self.queue_response(
+                result, ok, exception_str, replystream, local_id, message_id
             )
             self._queue.task_done()
             self._current_tasks -= 1
@@ -220,13 +240,13 @@ class Worker:
     async def __call__(self, work_func, replystream, local_id, message_id):
         self._current_tasks += 1
         self._in_process_messages.add(message_id)
-        ret_data = None
-        task = None
-        if not self._pool:
+        if self._pool == "local":
             logger.debug("Run in same thread")
-            ret_data = self.noexecutor(work_func)
+            result, ok, exception_str = self.noexecutor(work_func)
+            await self.queue_response(
+                result, ok, exception_str, replystream, local_id, message_id
+            )
             self._current_tasks -= 1
-            return ret_data
         else:
             logger.debug("Run in  pool")
             task = self._loop.run_in_executor(self._pool, self.noexecutor, work_func)

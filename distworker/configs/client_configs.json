@@ -6,5 +6,6 @@
   "reply_stream": "replystream",
   "reply_consumer": "replyconsumer",
   "reply_consumer_group": "reply_consumer_group",
-  "reply_stream_alive_time": 3600
+  "reply_stream_alive_time": 3600,
+  "client_cache_prefix": "client_1"
 }

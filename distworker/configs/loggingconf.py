@@ -32,3 +32,7 @@ if logging_config_file:
     with open(logging_config_file, "r") as fp:
         logging_config = yaml.safe_load(fp)
 logging.config.dictConfig(logging_config)
+
+
+def logg_conf_file():
+    return logging_config_file

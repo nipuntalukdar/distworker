@@ -121,17 +121,21 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                     continue
                 num1 = float(elems[1])
                 num2 = float(elems[2])
-                work = DumpLoad.dumpfn(my_fun, *(num1, num2), **{})
+                args = DumpLoad.dumpargs(*(num1, num2), **{})
+                func = DumpLoad.dumpfn(my_fun)
+
                 local_id = uuid.uuid4().hex
                 fut = Future()
                 responses_dict[local_id] = fut
                 if await rs.enqueue_work(
                     {
-                        "work": work,
+                        "args": args,
+                        "func": func,
                         "replystream": astream,
                         "local_id": local_id,
                     }
                 ):
+                    logger.info("Awaiting result")
                     result = await fut
                     logger.info(f"The result {result}")
             elif elems[0] == "my_fun2":
@@ -139,12 +143,19 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                     logger.error("my_fun2 expectcs one number as input")
                     continue
                 num = int(elems[1])
-                work = DumpLoad.dumpfn(my_fun2, *(num,), **{})
+                func = DumpLoad.dumpfn(my_fun2)
+                args = DumpLoad.dumpargs(*(num,), **{})
+
                 local_id = uuid.uuid4().hex
                 fut = Future()
                 responses_dict[local_id] = fut
                 if await rs.enqueue_work(
-                    {"work": work, "replystream": astream, "local_id": local_id}
+                    {
+                        "func": func,
+                        "args": args,
+                        "replystream": astream,
+                        "local_id": local_id,
+                    }
                 ):
                     result = await fut
                     logger.info(f"The result {result}")
@@ -154,12 +165,19 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                     logger.error("max_age_income expectcs one number as input")
                     continue
                 num = int(elems[1])
-                work = DumpLoad.dumpfn(max_age_income, *(num,), **{})
+                func = DumpLoad.dumpfn(max_age_income)
+                args = DumpLoad.dumpargs(*(num,), **{})
+
                 local_id = uuid.uuid4().hex
                 fut = Future()
                 responses_dict[local_id] = fut
                 if await rs.enqueue_work(
-                    {"work": work, "replystream": astream, "local_id": local_id}
+                    {
+                        "func": func,
+                        "args": args,
+                        "replystream": astream,
+                        "local_id": local_id,
+                    }
                 ):
                     result = await fut
                     logger.info(f"The result {result}")

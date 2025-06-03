@@ -88,9 +88,11 @@ def get_input(loop):
         if len(x) < 2:
             logger.error("Give two numbers")
             continue
-        task = DumpLoad.dumpfn(my_divide, *(x[0], x[1]), **{})
+        func = DumpLoad.dumpfn(my_divide)
+        args = DumpLoad.dumpargs(*(x[0], x[1]), **{})
         work = {
-            "work": task,
+            "func": func,
+            "args": args,
             "replystream": "astream",
             "local_id": uuid.uuid4().hex,
         }

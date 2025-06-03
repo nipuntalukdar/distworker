@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Callable, Self
+from typing import Callable, Self, Tuple, Union
 
 import redis.asyncio as redis
 from redis.backoff import ExponentialBackoff
@@ -175,7 +175,7 @@ class RedisStream:
 
     async def del_stream_group(self, key: str, group: str) -> bool:
         try:
-            with self._redis.pipeline() as pipe:
+            async with self._redis.pipeline() as pipe:
                 pipe.xgroup_destroy(key, group)
                 pipe.delete(key)
                 pipe.execute()
@@ -192,8 +192,11 @@ class RedisStream:
             if not work.get("exception_str", None):
                 # Remove empty or None value as None will cause xadd to fail
                 work.pop("exception_str", None)
-            await self._redis.xadd(the_stream, work)
+            logger.debug("Enqueueing task ")
+            val = await self._redis.xadd(the_stream, work)
+            logger.debug(f"Task enqueued {val}")
             return True
+
         except Exception:
             logger.exception("error")
             return False
@@ -204,14 +207,18 @@ class RedisStream:
             logger.debug(
                 f"Processing message, message id {message_id}, pending={pending}"
             )
-            if not message_data or b"work" not in message_data:
+            if not message_data or (
+                b"func" not in message_data and b"func_cache_id" not in message_data
+            ):
                 await self._redis.xack(self._task_stream, self._task_group, message_id)
                 continue
             await worker_func(
-                message_data[b"work"],
+                message_data.get(b"func", None),
+                message_data.get(b"args", None),
                 message_data.get(b"replystream", None),
                 message_data[b"local_id"],
                 message_id,
+                message_data.get(b"func_cache_id", None),
             )
 
     async def get_pending_work(
@@ -358,6 +365,23 @@ class RedisStream:
         except Exception:
             logger.exception(f"Key deleting issue: {hkey} {subkey}")
             return False
+
+    async def setval_expiry(self, key, value, expiry):
+        try:
+            return await self._redis.setex(key, expiry, value)
+        except Exception:
+            logger.exception("Problem in setting value and expiry")
+            return False
+
+    async def getval_expiry(self, key) -> Tuple[Union[str, None], Union[str, None]]:
+        try:
+            async with self._redis.pipeline() as pipe:
+                val, expiry = await pipe.get(key).ttl(key).execute()
+                logger.debug(f"{key} {expiry} {val}")
+                return val, expiry
+        except Exception:
+            logger.exception("Problem in getting value and expiry")
+            return None, None
 
 
 async def main():

@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 import sys
 import threading
@@ -6,7 +7,9 @@ import uuid
 from asyncio import coroutines, ensure_future, futures
 from concurrent.futures import Future
 from time import sleep, time
-from typing import Any, Dict, Union
+from typing import Any, Callable, Dict, Union
+
+from cachetools import TTLCache
 
 from .dumpload import DumpLoad
 from .redis_stream import RedisStream
@@ -83,8 +86,19 @@ class StreamResponseHandler:
 
 
 class LRegistry:
-    def __init__(self, loop):
+    def __init__(self, loop, configs: Dict[str, Any]):
         self._loop = loop
+        self._configs = configs
+        self._func_id_cache = TTLCache(1000000, 600)
+
+    def add_func_cache(self, func_id):
+        self._func_id_cache[func_id] = 1
+
+    def remove_from_func_cache(self, func_id):
+        self._func_id_cache.pop(func_id, None)
+
+    def func_in_cache(self, func_id):
+        return self._func_id_cache.get(func_id)
 
     def response_handler(self, respone_handler):
         self._response_handler = respone_handler
@@ -93,6 +107,10 @@ class LRegistry:
     @property
     def loop(self):
         return self._loop
+
+    @property
+    def configs(self):
+        return self._configs
 
     def redis_stream(self, rs: RedisStream):
         self._rs = rs
@@ -120,6 +138,9 @@ class LRegistry:
                     continue
                 logger.error("Removing future as task enqueue FAILED")
                 self._response_handler.remove_future(local_id)
+                if "send_func_and_id" in work and "func_cache_id" in work:
+                    LR.remove_from_func_cache(work["func_cache_id"])
+
                 return "EnqueueError", None
 
 
@@ -157,7 +178,7 @@ async def main(configs: Dict[str, Any], loop):
     await rs.create_stream(reply_stream, reply_consumer_group)
     asyncio.create_task(update_expire(reply_stream, reply_stream_alive_time, rs))
 
-    LR = LRegistry(loop)
+    LR = LRegistry(loop, configs)
     LR.response_handler(response_handler)
     LR.redis_stream(rs)
     LR.reply_stream(reply_stream)
@@ -181,20 +202,47 @@ def start_event_loop(loop, configs: Dict[str, Any]):
     loop.run_until_complete(main(configs, loop))
 
 
-def distwork(func):
-    def wrapper(*args, **kwargs):
-        if not LR:
-            raise "Loop is not initialized"
-        task = DumpLoad.dumpfn(func, *args, **kwargs)
-        work = {
-            "work": task,
-            "replystream": LR.rep_stream,
-            "local_id": uuid.uuid4().hex,
-        }
-        fut = run_coroutine_threadsafe(LR.submit_function(work), LR.loop)
-        return fut
+def distworkcache(cachename: str = None, cache_func: Callable[[], bool] = None):
+    def distworkwrapper(func):
+        def wrapper(*args, **kwargs):
+            if not LR:
+                raise "Loop is not initialized"
+            work = {}
+            send_func_and_id = True
+            logger.debug(f"Cachename {cachename}")
+            if cachename:
+                client_cache_prefix = LR.configs.get("client_cache_prefix", "")
+                func_cache_id = f"{client_cache_prefix}_{cachename}"
+                func_cache_id = hashlib.md5(func_cache_id.encode("utf-8")).hexdigest()
+                func_cache_id = f"{func.__name__}_{func_cache_id}"
 
-    return wrapper
+                work["func_cache_id"] = func_cache_id
+                if not cache_func:
+                    if LR.func_in_cache(func_cache_id):
+                        send_func_and_id = False
+                    else:
+                        LR.add_func_cache(func_cache_id)
+                else:
+                    send_func_and_id = cache_func()
+
+            task_args = DumpLoad.dumpargs(*args, **kwargs)
+            work["args"] = task_args
+            if send_func_and_id:
+                logger.debug("Sending function also")
+                task_func = DumpLoad.dumpfn(func)
+                work["func"] = task_func
+            work.update(
+                {
+                    "replystream": LR.rep_stream,
+                    "local_id": uuid.uuid4().hex,
+                }
+            )
+            fut = run_coroutine_threadsafe(LR.submit_function(work), LR.loop)
+            return fut
+
+        return wrapper
+
+    return distworkwrapper
 
 
 def start_loop(configs: Dict[str, Any]):

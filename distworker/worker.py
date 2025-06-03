@@ -9,6 +9,8 @@ from concurrent.futures import Executor, ProcessPoolExecutor
 from random import randint
 from typing import Any, Self, Union
 
+from cachetools import TLRUCache
+
 from .dumpload import DumpLoad
 from .redis_stream import RedisStream
 from .utils import RemoteException, get_packages_base64
@@ -63,6 +65,13 @@ class Worker:
                 ),
                 self._min_idle_time_pending_c_disappeared,
             )
+        self._func_cache_ttl = max(
+            3600, int(worker_config.get("func_cache_ttl", 86400))
+        )
+        self._func_cache_size = min(
+            100000, int(worker_config.get("func_cache_size", 10000))
+        )
+        self._func_cache = TLRUCache(self._func_cache_size, self.cache_ttu)
         self._queue = asyncio.Queue(self._max_tasks * 2)
         self._response_queue = asyncio.Queue(self._max_tasks * 2)
         self._registry: str = register_key
@@ -128,6 +137,10 @@ class Worker:
             sys.exit(1)
         return worker
 
+    def cache_ttu(self, key, value, time_value):
+        logger.debug(f"Called ttu for {key}, {time_value} {self._func_cache_ttl}")
+        return time_value + self._func_cache_ttl
+
     @staticmethod
     async def register(redis_client, registry_key, myid, expiretime):
         thistime = int(time.time())
@@ -139,16 +152,18 @@ class Worker:
         return True
 
     @staticmethod
-    def noexecutor(work_func_task):
+    def noexecutor(func, serialized_args, func_serialized=True):
         try:
-            func, args, kwargs = DumpLoad.loadfn(work_func_task)
+            args, kwargs = DumpLoad.load_args(serialized_args)
+            if func_serialized:
+                func = DumpLoad.loadfn(func)
             if not func:
                 return False, "NOTOK", None
             return_data = func(*args, **kwargs)
             return return_data, "OK", None
         except Exception as e:
             logger.exception("Execution failed")
-            traceback_str = traceback.format_exc(10)
+            traceback_str = traceback.format_exc(limit=10)
             re = RemoteException(type(e), e.__str__(), traceback_str)
             exception_bytes = DumpLoad.dump(re)
             return None, "NOTOK", exception_bytes
@@ -180,7 +195,7 @@ class Worker:
             )
             self._queue.task_done()
             self._current_tasks -= 1
-            self._in_process_messages.remove(message_id)
+            self._in_process_messages.discard(message_id)
 
     async def pending_processing_task(self):
         logger.debug("Pending work processor started")
@@ -237,19 +252,100 @@ class Worker:
             except Exception:
                 logger.exception("Error")
 
-    async def __call__(self, work_func, replystream, local_id, message_id):
+    async def get_func_from_cache(self, func_cache_id: str) -> Union[str, None]:
+        func_serialized = isinstance(self._pool, ProcessPoolExecutor)
+        func = self._func_cache.get(func_cache_id)
+        if func:
+            logger.debug("Got function in local cache")
+            return func
+        else:
+            func, ttl = await self._redis_stream.getval_expiry(func_cache_id)
+            if not func:
+                logger.error(f"Function with id {func_cache_id} not in cache")
+                return None
+            if not func_serialized:
+                func = DumpLoad.loadfn(func)
+            self._func_cache[func_cache_id] = func
+            logger.debug("Got the function from remote cache")
+            return func
+
+    async def __call__(
+        self, func, args, replystream, local_id, message_id, func_cache_id
+    ):
         self._current_tasks += 1
         self._in_process_messages.add(message_id)
+        func_serialized = (
+            isinstance(self._pool, ProcessPoolExecutor) or not func_cache_id
+        )
+        func_unserialized = None
+        if func_cache_id and not func:
+            # The function must be in cache
+            logger.debug(f"Loading function from cache for id {func_cache_id}")
+            func = await self.get_func_from_cache(func_cache_id)
+            if not func:
+                logger.error(f"Function is not in cache id={func_cache_id}")
+                re = RemoteException(
+                    RemoteException,
+                    "Function not in cache",
+                    traceback.format_stack(10)[:-1],
+                )
+                await self.queue_response(
+                    None, "NOTOK", DumpLoad.dump(re), replystream, local_id, message_id
+                )
+                self._current_tasks -= 1
+                return
+
+        elif func_cache_id and func:
+            # even if the function is in cache, update the ttl
+            if not await self._redis_stream.setval_expiry(
+                func_cache_id, func, self._func_cache_ttl
+            ):
+                logger.error(
+                    f"Function could not be added to cache, id={func_cache_id}"
+                )
+                re = RemoteException(
+                    RemoteException,
+                    "Function could not be added to cache",
+                    traceback.format_stack(10)[:-1],
+                )
+                self._func_cache.pop(func_cache_id)
+                await self.queue_response(
+                    None, "NOTOK", DumpLoad.dump(re), replystream, local_id, message_id
+                )
+                self._current_tasks -= 1
+                return
+            if not func_serialized:
+                # local cache can have the unserialized function
+                func_unserialized = DumpLoad.loadfn(func)
+                self._func_cache[func_cache_id] = func_unserialized
+                func = func_unserialized
+            else:
+                self._func_cache[func_cache_id] = func
+        elif not func_cache_id and not func:
+            # Error, one of them must be there
+            logger.error("Both function and function id missing from task")
+            re = RemoteException(
+                RemoteException,
+                "Function and function cache id, both are missing",
+                traceback.format_stack(10)[:-1],
+            )
+            await self.queue_response(
+                None, "NOTOK", DumpLoad.dump(re), replystream, local_id, message_id
+            )
+            self._current_tasks -= 1
+            return
         if self._pool == "local":
             logger.debug("Run in same thread")
-            result, ok, exception_str = self.noexecutor(work_func)
+            result, ok, exception_str = self.noexecutor(func, args, func_serialized)
             await self.queue_response(
                 result, ok, exception_str, replystream, local_id, message_id
             )
             self._current_tasks -= 1
         else:
-            logger.debug("Run in  pool")
-            task = self._loop.run_in_executor(self._pool, self.noexecutor, work_func)
+            logger.debug(f"Run in  pool {type(func)}")
+            task = self._loop.run_in_executor(
+                self._pool, self.noexecutor, func, args, func_serialized
+            )
             await self._queue.put((task, replystream, local_id, message_id))
 
     async def do_cleanup(self):

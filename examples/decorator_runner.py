@@ -3,17 +3,33 @@ import logging
 import math
 import random
 
-from distworker.loop import distwork, start_loop
+from distworker.loop import distworkcache, start_loop
 
 logger = logging.getLogger("decorator_test")
 
 
-@distwork
+class TestCacheFun:
+    def __init__(self):
+        self._called = 0
+
+    def __call__(self):
+        logger.debug("Called cache decider")
+        self._called += 1
+        if self._called == 10:
+            self._called = 0
+            return True
+        return False
+
+
+cachedecider = TestCacheFun()
+
+
+@distworkcache(cachename="hello", cache_func=cachedecider)
 def fun2(x, y):
     return x / y
 
 
-@distwork
+@distworkcache("hello")
 def fun(x):
     x = abs(int(x))
     if x < 2:

@@ -4,7 +4,17 @@
   "max_task_pull": 1,
   "redis_host": "127.0.0.1",
   "redis_port": 6379,
-  "taskstream": "tasks",
+  "task_streams": {
+    "tasks1": {
+      "maxlen": 100
+    },
+    "tasks2": {
+      "maxlen": 100
+    },
+    "tasks3": {
+      "maxlen": 100
+    }
+  },
   "taskgroup": "taskgroup",
   "min_idle_time_pending": 120000,
   "max_wait_milli_second": 10000,

@@ -24,12 +24,12 @@ class TestCacheFun:
 cachedecider = TestCacheFun()
 
 
-@distworkcache(cachename="hello", cache_func=cachedecider)
+@distworkcache(cachename="cache1", cache_func=cachedecider, tasksqueue="tasks3")
 def fun2(x, y):
     return x / y
 
 
-@distworkcache("hello")
+@distworkcache(tasksqueue="tasks2", cachename="cache2")
 def fun(x):
     x = abs(int(x))
     if x < 2:

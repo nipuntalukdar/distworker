@@ -7,7 +7,7 @@ import traceback
 import uuid
 from concurrent.futures import Executor, ProcessPoolExecutor
 from random import randint
-from typing import Any, Self, Union
+from typing import Any, Dict, Self, Union
 
 from cachetools import TLRUCache
 
@@ -23,7 +23,7 @@ class Worker:
         self,
         redisclient: RedisStream,
         redis_url: str = "redis://127.0.0.1:6379",
-        task_stream: str = "tasks",
+        task_streams: Dict[str, Any] = {"tasks": {"maxlen": 100}},
         task_group: str = "taskgroup",
         register_key: str = "workers",
         worker_config: dict = None,
@@ -33,7 +33,7 @@ class Worker:
         worker_response_queue: asyncio.Queue = None,
     ):
         self._redis_url: str = redis_url
-        self._task_stream: str = task_stream
+        self._task_streams: Dict[str, Any] = task_streams
         self._task_group: str = task_group
         self._redis_stream: RedisStream = redisclient
         self._pool: Executor = pool
@@ -89,7 +89,7 @@ class Worker:
     async def create(
         theclass,
         redis_url: str = "redis://127.0.0.1:6379",
-        task_stream: str = "tasks",
+        task_streams: Dict[str, Any] = {"tasks": {"maxlen": 100}},
         task_group: str = "taskgroup",
         pool: Union[Executor, str] = None,
         myid: str = None,
@@ -107,19 +107,28 @@ class Worker:
             logger.error("Incorrect type or value")
             return None
 
+        task_streams_from_config = {}
+        if worker_config:
+            task_streams_from_config = worker_config.get("task_streams", {})
+        if task_streams:
+            task_streams_from_config.update(task_streams)
+        logger.debug(f" Task streams from config {task_streams_from_config}")
+        if not task_streams_from_config:
+            logger.error("Task stream details are missing")
+            return None
+
         logger.debug(f"Redis {redis_url}")
         redis_client: RedisStream = await RedisStream.create(
-            redis_url, task_stream, task_group
+            redis_url, task_streams_from_config, task_group
         )
         if not redis_client:
             logger.error("Unable to get redis client")
             return None
         consumer_id = consumer_id if consumer_id else myid
-
         worker = theclass(
             redis_client,
             redis_url,
-            task_stream,
+            task_streams_from_config,
             task_group,
             register_key=register_key,
             pool=execpool,
@@ -176,22 +185,23 @@ class Worker:
         result: Union[Any, None],
         ok: str,
         exception_str: Union[str, None],
-        replystream: str,
-        local_id: str,
-        message_id: str,
+        replystream: Union[bytes, None],
+        local_id: bytes,
+        message_id: bytes,
+        stream: bytes,
     ):
         exception = False if not exception_str else True
         logger.debug(f"Result={result}, ok={ok}, exception={exception}")
         await self._response_queue.put(
-            (result, ok, exception_str, replystream, local_id, message_id)
+            (result, ok, exception_str, replystream, local_id, message_id, stream)
         )
 
     async def get_response(self):
         while self._keep_running:
-            task, replystream, local_id, message_id = await self._queue.get()
+            task, replystream, local_id, message_id, stream = await self._queue.get()
             result, ok, exception_str = await task
             await self.queue_response(
-                result, ok, exception_str, replystream, local_id, message_id
+                result, ok, exception_str, replystream, local_id, message_id, stream
             )
             self._queue.task_done()
             self._current_tasks -= 1
@@ -212,7 +222,7 @@ class Worker:
             else:
                 min_pending_time = self._min_idle_time_pending_c_disappeared
             await self._redis_stream.get_pending_work(
-                self, consumer_id, max_work, min_pending_time
+                self, consumer_id, max_work, min_pending_time, self._task_streams
             )
 
     async def process_pending(self):
@@ -270,7 +280,14 @@ class Worker:
             return func
 
     async def __call__(
-        self, func, args, replystream, local_id, message_id, func_cache_id
+        self,
+        stream: str,
+        func: Union[bytes, None],
+        args: Union[bytes, None],
+        replystream: Union[bytes, None],
+        local_id: bytes,
+        message_id: bytes,
+        func_cache_id: Union[bytes, None],
     ):
         self._current_tasks += 1
         self._in_process_messages.add(message_id)
@@ -290,7 +307,13 @@ class Worker:
                     traceback.format_stack(10)[:-1],
                 )
                 await self.queue_response(
-                    None, "NOTOK", DumpLoad.dump(re), replystream, local_id, message_id
+                    None,
+                    "NOTOK",
+                    DumpLoad.dump(re),
+                    replystream,
+                    local_id,
+                    message_id,
+                    stream,
                 )
                 self._current_tasks -= 1
                 return
@@ -310,7 +333,13 @@ class Worker:
                 )
                 self._func_cache.pop(func_cache_id)
                 await self.queue_response(
-                    None, "NOTOK", DumpLoad.dump(re), replystream, local_id, message_id
+                    None,
+                    "NOTOK",
+                    DumpLoad.dump(re),
+                    replystream,
+                    local_id,
+                    message_id,
+                    stream,
                 )
                 self._current_tasks -= 1
                 return
@@ -338,7 +367,7 @@ class Worker:
             logger.debug("Run in same thread")
             result, ok, exception_str = self.noexecutor(func, args, func_serialized)
             await self.queue_response(
-                result, ok, exception_str, replystream, local_id, message_id
+                result, ok, exception_str, replystream, local_id, message_id, stream
             )
             self._current_tasks -= 1
         else:
@@ -346,7 +375,7 @@ class Worker:
             task = self._loop.run_in_executor(
                 self._pool, self.noexecutor, func, args, func_serialized
             )
-            await self._queue.put((task, replystream, local_id, message_id))
+            await self._queue.put((task, replystream, local_id, message_id, stream))
 
     async def do_cleanup(self):
         logger.info(f"Unregistering myself {self._myid}")
@@ -356,6 +385,7 @@ class Worker:
     async def do_work(self):
         my_consumer_id = self._consumer_id
         diag_info_time = time.time()
+        task_stream_details = {key: ">" for key in self._task_streams.keys()}
 
         while self._keep_running:
             logger.debug("Getting work")
@@ -371,6 +401,7 @@ class Worker:
                     my_consumer_id,
                     self._max_tasks - self._current_tasks,
                     self._max_wait_milli_second,
+                    task_stream_details,
                 )
             except asyncio.CancelledError:
                 logger.error("Dequeue work stopping as cancelled")

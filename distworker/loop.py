@@ -123,12 +123,14 @@ class LRegistry:
     def rep_stream(self):
         return self._reply_stream
 
-    async def submit_function(self, work: dict, retry=4) -> (str, Any):
+    async def submit_function(
+        self, work: dict, tasksqueue="tasks", retry=4
+    ) -> (str, Any):
         local_id = work["local_id"]
         fut = asyncio.Future()
         self._response_handler.add_future(local_id, fut)
         for i in range(retry):
-            if await self._rs.enqueue_work(work):
+            if await self._rs.enqueue_work(work, tasksqueue):
                 logger.debug("Enqueued task")
                 result = await fut
                 return result
@@ -153,7 +155,7 @@ async def main(configs: Dict[str, Any], loop):
     global LR, FAILED
     redis_host = configs.get("redis_host", "127.0.0.1")
     redis_port = configs.get("redis_port", 6379)
-    taskstream = configs.get("taskstream", "tasks")
+    taskstream = configs.get("task_streams", {"tasks": {"maxlen": 100}})
     taskgroup = configs.get("taskgroup", "taskgroup")
     reply_stream = configs.get("reply_stream", "replystream")
     reply_consumer = configs.get("reply_consumer", "replyconsumer")
@@ -166,7 +168,7 @@ async def main(configs: Dict[str, Any], loop):
 
     rs = await RedisStream.create(
         redis_url=redis_url,
-        task_stream=taskstream,
+        task_streams=taskstream,
         task_group=taskgroup,
         respone_handler=response_handler,
     )
@@ -202,7 +204,9 @@ def start_event_loop(loop, configs: Dict[str, Any]):
     loop.run_until_complete(main(configs, loop))
 
 
-def distworkcache(cachename: str = None, cache_func: Callable[[], bool] = None):
+def distworkcache(
+    cachename: str = None, cache_func: Callable[[], bool] = None, tasksqueue="tasks"
+):
     def distworkwrapper(func):
         def wrapper(*args, **kwargs):
             if not LR:
@@ -237,7 +241,9 @@ def distworkcache(cachename: str = None, cache_func: Callable[[], bool] = None):
                     "local_id": uuid.uuid4().hex,
                 }
             )
-            fut = run_coroutine_threadsafe(LR.submit_function(work), LR.loop)
+            fut = run_coroutine_threadsafe(
+                LR.submit_function(work, tasksqueue), LR.loop
+            )
             return fut
 
         return wrapper

@@ -21,9 +21,18 @@ LOGGING_CONFIG = {
             "class": "logging.StreamHandler",
             "formatter": "detailed",
             "level": "DEBUG",
-        }
+        },
+        "file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "level": "DEBUG",
+            "formatter": "detailed",
+            "filename": "/tmp/a.log",
+            "maxBytes": 10485760,
+            "backupCount": 5,
+            "encoding": "utf-8",
+        },
     },
-    "root": {"level": "DEBUG", "handlers": ["console"]},
+    "root": {"level": "DEBUG", "handlers": ["console", "file"]},
 }
 
 logging_config = LOGGING_CONFIG

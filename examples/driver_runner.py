@@ -19,6 +19,7 @@ from distworker.redis_stream import RedisStream
 logger = logging.getLogger("driver")
 keep_running = True
 responses_dict: Dict[str, Future] = {}
+TASK_STREAM = "tasks2"
 
 
 def create_tmp_csv(rowc: int, outputfile: str):
@@ -133,7 +134,8 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                         "func": func,
                         "replystream": astream,
                         "local_id": local_id,
-                    }
+                    },
+                    TASK_STREAM,
                 ):
                     logger.info("Awaiting result")
                     result = await fut
@@ -155,7 +157,8 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                         "args": args,
                         "replystream": astream,
                         "local_id": local_id,
-                    }
+                    },
+                    TASK_STREAM,
                 ):
                     result = await fut
                     logger.info(f"The result {result}")
@@ -177,7 +180,8 @@ async def get_input(input_queue: asyncio.Queue, rs: RedisStream, astream: str):
                         "args": args,
                         "replystream": astream,
                         "local_id": local_id,
-                    }
+                    },
+                    TASK_STREAM,
                 ):
                     result = await fut
                     logger.info(f"The result {result}")
@@ -208,7 +212,10 @@ async def main(consumer_grp: str, reply_stream: str):
     for sig in signal.SIGTERM, signal.SIGINT:
         asyncio.get_event_loop().add_signal_handler(sig, handle_error_interrupt)
     try:
-        rs = await RedisStream.create(respone_handler=my_response_hanlder)
+        rs = await RedisStream.create(
+            task_streams={TASK_STREAM: {"maxlen": 100}},
+            respone_handler=my_response_hanlder,
+        )
         await rs.create_stream(reply_stream, consumer_grp)
         response_task = asyncio.create_task(
             process_response(rs, reply_stream, "c1", consumer_grp)

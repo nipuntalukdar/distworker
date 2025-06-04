@@ -7,5 +7,16 @@
   "reply_consumer": "replyconsumer",
   "reply_consumer_group": "reply_consumer_group",
   "reply_stream_alive_time": 3600,
+  "task_streams": {
+    "tasks1": {
+      "maxlen": 100
+    },
+    "tasks2": {
+      "maxlen": 100
+    },
+    "tasks3": {
+      "maxlen": 100
+    }
+  },
   "client_cache_prefix": "client_1"
 }

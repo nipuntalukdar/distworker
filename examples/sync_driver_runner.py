@@ -51,7 +51,10 @@ def my_divide(x: int, y: int) -> int:
 
 async def main():
     global rs
-    rs = await RedisStream.create(respone_handler=my_response_hanlder)
+    task_streams = {"tasks1": {"maxlen": 100}}
+    rs = await RedisStream.create(
+        task_streams=task_streams, respone_handler=my_response_hanlder
+    )
     await rs.create_stream("astream", "agroup")
     while True:
         logger.debug("Dequeing responses")
@@ -62,7 +65,7 @@ async def submit_function(work: dict) -> (str, Any):
     local_id = work["local_id"]
     fut = asyncio.Future()
     my_response_hanlder.add_future(local_id, fut)
-    if await rs.enqueue_work(work):
+    if await rs.enqueue_work(work, "tasks1"):
         logger.debug("Enqueued task")
         result = await fut
         return result

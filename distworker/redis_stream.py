@@ -1,6 +1,6 @@
 import asyncio
 import logging
-from typing import Callable, Self, Tuple, Union
+from typing import Any, Callable, Dict, List, Self, Tuple, Union
 
 import redis.asyncio as redis
 from redis.backoff import ExponentialBackoff
@@ -21,15 +21,15 @@ class RedisStream:
     def __init__(
         self,
         redis_client: redis.Redis,
-        redis_url: str,
-        task_stream: str,
-        task_group: str,
-        maxlen: int,
+        redis_url: str = "redis://127.0.0.1:6379",
+        task_streams: Dict[str, Any] = {"tasks": {"maxlen": 100}},
+        task_group: str = "taskgroup",
+        maxlen: int = 100,
         respone_handler: Callable = None,
         worker_response_queue: asyncio.Queue = None,
     ):
         self._redis_url = redis_url
-        self._task_stream = task_stream
+        self._task_streams = task_streams
         self._task_group = task_group
         self._maxlen = maxlen
         self._redis: redis.StrictRedis = redis_client
@@ -40,9 +40,9 @@ class RedisStream:
     async def create(
         cls,
         redis_url: str = "redis://127.0.0.1:6379",
-        task_stream: str = "tasks",
+        task_streams: Dict[str, Any] = {"tasks": {"maxlen": 100}},
         task_group: str = "taskgroup",
-        maxlen: int = 1000000,
+        maxlen: int = 100,
         worker_response_queue: asyncio.Queue = None,
         respone_handler: Callable = None,
     ) -> Self:
@@ -74,25 +74,32 @@ class RedisStream:
         )
         connection_attempts = 10
         for i in range(connection_attempts):
-            try:
-                await redis_client.xgroup_create(task_stream, task_group, mkstream=True)
-            except (ConnectionRefusedError, ConnectionError):
-                logger.error("Unable to connect to Redis")
-                if i == connection_attempts - 1:
-                    logger.error("Unable to connect to Redis, giving up ...")
-                    return None
-                else:
-                    await asyncio.sleep(3)
-                    continue
-            except ResponseError as e:
-                if str(e) != "BUSYGROUP Consumer Group name already exists":
+            failed = False
+            for task_stream in task_streams.keys():
+                try:
+                    await redis_client.xgroup_create(
+                        task_stream, task_group, mkstream=True
+                    )
+                except (ConnectionRefusedError, ConnectionError):
+                    logger.error("Unable to connect to Redis")
+                    if i == connection_attempts - 1:
+                        logger.error("Unable to connect to Redis, giving up ...")
+                        return None
+                    else:
+                        await asyncio.sleep(3)
+                        failed = True
+                        break
+                except ResponseError as e:
+                    if str(e) != "BUSYGROUP Consumer Group name already exists":
+                        logger.exception("error")
+                except Exception:
                     logger.exception("error")
                     return None
-            except Exception:
-                logger.exception("error")
-                return None
+                logger.info(f"Created {task_stream} and group {task_group}")
+            if not failed:
+                break
         return cls(
-            redis_client, redis_url, task_stream, task_group, maxlen, respone_handler
+            redis_client, redis_url, task_streams, task_group, maxlen, respone_handler
         )
 
     async def set(self, key: str, value: str):
@@ -138,6 +145,7 @@ class RedisStream:
                 replystream,
                 local_id,
                 message_id,
+                stream,
             ) = await self._worker_response_queue.get()
             exception = True if exception_str else False
             logger.debug(
@@ -156,7 +164,7 @@ class RedisStream:
                     replystream,
                 )
             ) or not replystream:
-                await self._redis.xack(self._task_stream, self._task_group, message_id)
+                await self._redis.xack(stream, self._task_group, message_id)
             self._worker_response_queue.task_done()
 
     async def add_to_hset(self, hkey, key, val, expiretime=0):
@@ -184,10 +192,7 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def enqueue_work(self, work: dict, stream: str = None) -> bool:
-        the_stream = stream
-        if not the_stream:
-            the_stream = self._task_stream
+    async def enqueue_work(self, work: dict, the_stream: str) -> bool:
         try:
             if not work.get("exception_str", None):
                 # Remove empty or None value as None will cause xadd to fail
@@ -201,7 +206,13 @@ class RedisStream:
             logger.exception("error")
             return False
 
-    async def process_work(self, messages, worker_func, pending=False):
+    async def process_work(
+        self,
+        stream: str,
+        messages: List[Tuple[str, str]],
+        worker_func: Callable,
+        pending=False,
+    ):
         for message in messages:
             message_id, message_data = message
             logger.debug(
@@ -210,9 +221,10 @@ class RedisStream:
             if not message_data or (
                 b"func" not in message_data and b"func_cache_id" not in message_data
             ):
-                await self._redis.xack(self._task_stream, self._task_group, message_id)
+                await self._redis.xack(self._task_streams, self._task_group, message_id)
                 continue
             await worker_func(
+                stream,
                 message_data.get(b"func", None),
                 message_data.get(b"args", None),
                 message_data.get(b"replystream", None),
@@ -227,13 +239,22 @@ class RedisStream:
         consumer_id: str,
         max_work: int = 20,
         min_idle_time=7200000,
+        task_streams: Dict[str, Any] = {},
+    ):
+        for the_stream in task_streams.keys():
+            await self.get_pending_work_stream(
+                worker_func, the_stream, consumer_id, max_work, min_idle_time
+            )
+
+    async def get_pending_work_stream(
+        self, worker_func, the_stream, consumer_id, max_work, min_idle_time
     ):
         logger.debug(
             f"Getting pending tasks with min_idle_time {min_idle_time} for consumer_id {consumer_id}"
         )
         try:
             pending_messages = await self._redis.xpending_range(
-                self._task_stream,
+                the_stream,
                 self._task_group,
                 "-",
                 "+",
@@ -249,13 +270,15 @@ class RedisStream:
                 ]
                 if message_ids:
                     messages = await self._redis.xclaim(
-                        self._task_stream,
+                        the_stream,
                         self._task_group,
                         consumer_id,
                         min_idle_time=min_idle_time,
                         message_ids=message_ids,
                     )
-                    await self.process_work(messages, worker_func, pending=True)
+                    await self.process_work(
+                        the_stream, messages, worker_func, pending=True
+                    )
             else:
                 logger.debug(
                     f"No pending tasks with min_idle_time {min_idle_time} for consumer_id {consumer_id}"
@@ -270,13 +293,17 @@ class RedisStream:
         consumer_id: str,
         max_work: int = 20,
         max_wait_milli_second=10000,
+        task_stream_details: Dict[str, str] = None,
     ):
         works = None
+        if not task_stream_details:
+            task_stream_details = {stream: ">" for stream in self._task_streams.keys()}
+        logger.debug(f"The task details={task_stream_details}")
         try:
             works = await self._redis.xreadgroup(
                 self._task_group,
                 consumer_id,
-                {self._task_stream: ">"},
+                task_stream_details,
                 max_work,
                 max_wait_milli_second,
             )
@@ -287,7 +314,7 @@ class RedisStream:
             return True
         for stream, messages in works:
             logger.debug(f"Num tasks fetched {len(messages)} in stream {stream}")
-            await self.process_work(messages, worker_func)
+            await self.process_work(stream, messages, worker_func)
         return True
 
     async def dequeue_response(
@@ -351,7 +378,7 @@ class RedisStream:
 
     async def trim(self):
         try:
-            await self._redis.xtrim(self._task_stream, self._maxlen)
+            await self._redis.xtrim(self._task_streams, self._maxlen)
         except Exception:
             logger.exception("error")
 

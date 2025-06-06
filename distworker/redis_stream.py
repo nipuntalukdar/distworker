@@ -152,6 +152,11 @@ class RedisStream:
                 f"Response from queue = {ret}, {ok}, {replystream}, {local_id}, {exception}"
             )
 
+            if not replystream:
+                logger.debug(
+                    f"Not sending reply for local_id {local_id} as no replystream given"
+                )
+
             if (
                 replystream
                 and await self.enqueue_work(
@@ -186,7 +191,7 @@ class RedisStream:
             async with self._redis.pipeline() as pipe:
                 pipe.xgroup_destroy(key, group)
                 pipe.delete(key)
-                pipe.execute()
+                await pipe.execute()
             return True
         except Exception:
             logger.exception("error")
@@ -286,6 +291,16 @@ class RedisStream:
 
         except Exception:
             logger.exception("Getting pending work")
+
+    async def delete_stream(self, stream):
+        try:
+            num_key_deleted = await self._redis.delete(stream)
+            if num_key_deleted == 0:
+                logger.debug(f"Perhaps stream: {stream} is already deleted")
+            return True
+        except Exception:
+            logger.exception("deleting key")
+            return False
 
     async def dequeue_work(
         self,

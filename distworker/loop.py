@@ -126,23 +126,29 @@ class LRegistry:
     async def submit_function(
         self, work: dict, tasksqueue="tasks", retry=4
     ) -> (str, Any):
+        response_needed = work.get("replystream", None) is not None
         local_id = work["local_id"]
-        fut = asyncio.Future()
-        self._response_handler.add_future(local_id, fut)
+        fut = None
+        if response_needed:
+            fut = asyncio.Future()
+            self._response_handler.add_future(local_id, fut)
         for i in range(retry):
             if await self._rs.enqueue_work(work, tasksqueue):
                 logger.debug("Enqueued task")
-                result = await fut
-                return result
+                if response_needed:
+                    result = await fut
+                    return result
+                else:
+                    return "EnqueuedTask", None
             else:
                 if i < retry - 1:
                     await asyncio.sleep(2)
                     continue
-                logger.error("Removing future as task enqueue FAILED")
-                self._response_handler.remove_future(local_id)
+                if response_needed:
+                    logger.error("Removing future as task enqueue FAILED")
+                    self._response_handler.remove_future(local_id)
                 if "send_func_and_id" in work and "func_cache_id" in work:
                     LR.remove_from_func_cache(work["func_cache_id"])
-
                 return "EnqueueError", None
 
 
@@ -205,7 +211,10 @@ def start_event_loop(loop, configs: Dict[str, Any]):
 
 
 def distworkcache(
-    cachename: str = None, cache_func: Callable[[], bool] = None, tasksqueue="tasks"
+    cachename: str = None,
+    cache_func: Callable[[], bool] = None,
+    tasksqueue="tasks",
+    result_needed=True,
 ):
     def distworkwrapper(func):
         def wrapper(*args, **kwargs):
@@ -235,12 +244,15 @@ def distworkcache(
                 logger.debug("Sending function also")
                 task_func = DumpLoad.dumpfn(func)
                 work["func"] = task_func
-            work.update(
-                {
-                    "replystream": LR.rep_stream,
-                    "local_id": uuid.uuid4().hex,
-                }
-            )
+            if result_needed:
+                work.update(
+                    {
+                        "replystream": LR.rep_stream,
+                        "local_id": uuid.uuid4().hex,
+                    }
+                )
+            else:
+                work.update({"local_id": uuid.uuid4().hex})
             fut = run_coroutine_threadsafe(
                 LR.submit_function(work, tasksqueue), LR.loop
             )

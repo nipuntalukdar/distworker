@@ -2,6 +2,7 @@ import json
 import logging
 import math
 import random
+from time import sleep
 
 from distworker.loop import distworkcache, start_loop
 
@@ -14,10 +15,13 @@ class TestCacheFun:
 
     def __call__(self):
         logger.debug("Called cache decider")
-        self._called += 1
-        if self._called == 10:
-            self._called = 0
+        if self._called == 0:
+            self._called += 1
             return True
+        else:
+            self._called += 1
+            if self._called == 21:
+                self._called = 0
         return False
 
 
@@ -43,6 +47,15 @@ def fun(x):
         if x % i == 0:
             return f"Not prime {x}"
     return f"Prime {x}"
+
+
+@distworkcache(tasksqueue="tasks3", cachename="cache3", result_needed=False)
+def timepass(x):
+    x = abs(int(x))
+    if x % 200001 == 0:
+        return 0
+    else:
+        return x
 
 
 configs = {}
@@ -71,3 +84,9 @@ for i in range(1, 201):
         logger.exception("Error")
 logger.info(f"Result={result_count}, expected=300")
 logger.info(f"Exception={exception_count}, expected=100")
+
+logger.info("Now calling timepass after 10 second sleep")
+sleep(10)
+for i in range(20):
+    a = timepass(i)
+    print(a.result())

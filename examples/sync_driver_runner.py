@@ -10,6 +10,7 @@ from typing import Any, Dict
 
 from distworker.dumpload import DumpLoad
 from distworker.redis_stream import RedisStream
+from distworker.utils import get_configs_from_file, get_redis_url
 
 GATHER_RESULT_ONE_SHOT = False
 STOPPED = False
@@ -59,8 +60,12 @@ def my_divide(x: int, y: int) -> int:
 async def main():
     global rs
     task_streams = {"tasks1": {"maxlen": 100}}
+    configs = get_configs_from_file("/usr/share/distworker/client_configs.json")
+    redis_url = get_redis_url(configs)
     rs = await RedisStream.create(
-        task_streams=task_streams, respone_handler=my_response_hanlder
+        redis_url=redis_url,
+        task_streams=task_streams,
+        respone_handler=my_response_hanlder,
     )
     await rs.create_stream("astream", "agroup")
     while not STOPPED:

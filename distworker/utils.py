@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+from os import getenv
 from typing import Any, Dict
 
 import pkg_resources
@@ -21,6 +22,30 @@ class RemoteException(Exception):
         {self._custom_stack_strace}"""
 
     __repr__ = __str__
+
+
+def get_configs_from_file(
+    filepath: str, configs: Dict[str, Any] = None
+) -> Dict[str, Any]:
+    try:
+        with open(filepath, "rt") as fp:
+            conf = json.load(fp)
+            if configs:
+                conf.update(configs)
+            return conf
+    except Exception:
+        return {}
+
+
+def get_redis_url(configs: Dict[str, Any]) -> str:
+    redis_host = configs.get("redis_host", "127.0.0.1")
+    redis_port = configs.get("redis_port", 6379)
+    redis_password = getenv("REDIS_PASSWORD", "")
+    if redis_password:
+        redis_url = f"redis://:{redis_password}@{redis_host}:{redis_port}"
+    else:
+        redis_url = f"redis://{redis_host}:{redis_port}"
+    return redis_url
 
 
 def get_packages() -> Dict[str, str]:

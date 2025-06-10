@@ -12,8 +12,9 @@ from typing import Any, Dict, Self, Union
 from cachetools import TLRUCache
 
 from .dumpload import DumpLoad
+from .inprocess_cache import InProcessMessages
 from .redis_stream import RedisStream
-from .utils import RemoteException, get_packages_base64
+from .utils import RemoteException, get_packages_base64, get_redis_url
 
 logger = logging.getLogger("worker")
 
@@ -45,7 +46,7 @@ class Worker:
         self._max_tasks = os.cpu_count()
         self._min_idle_time_pending = 100000
         self._min_idle_time_pending_c_disappeared = 1000000
-        self._in_process_messages = set()
+        self._in_process = InProcessMessages(self._redis_stream)
         self._consumer_id = consumer_id if consumer_id else self._myid
         if worker_config:
             self._max_tasks = min(
@@ -88,7 +89,7 @@ class Worker:
     @classmethod
     async def create(
         theclass,
-        redis_url: str = "redis://127.0.0.1:6379",
+        redis_url: Union[str, None] = None,
         task_streams: Dict[str, Any] = {"tasks": {"maxlen": 100}},
         task_group: str = "taskgroup",
         pool: Union[Executor, str] = None,
@@ -106,6 +107,8 @@ class Worker:
         if isinstance(execpool, str) and execpool != "local":
             logger.error("Incorrect type or value")
             return None
+        if not redis_url:
+            redis_url = get_redis_url(worker_config)
 
         task_streams_from_config = {}
         if worker_config:
@@ -177,8 +180,8 @@ class Worker:
             exception_bytes = DumpLoad.dump(re)
             return None, "NOTOK", exception_bytes
 
-    def is_in_process(self, message_id):
-        return message_id in self._in_process_messages
+    def is_in_process(self, message_id) -> int:
+        return self._in_process.is_in_cache(message_id)
 
     async def queue_response(
         self,
@@ -205,7 +208,7 @@ class Worker:
             )
             self._queue.task_done()
             self._current_tasks -= 1
-            self._in_process_messages.discard(message_id)
+            self._in_process.delete_from_cache(message_id)
 
     async def pending_processing_task(self):
         logger.debug("Pending work processor started")
@@ -290,7 +293,26 @@ class Worker:
         func_cache_id: Union[bytes, None],
     ):
         self._current_tasks += 1
-        self._in_process_messages.add(message_id)
+        if not await self._in_process.add_to_cache(message_id, 10):
+            logger.error(f"Message id could not be added to cache, id={message_id}")
+            re = RemoteException(
+                RemoteException,
+                "Message id could not not be added to cache",
+                traceback.format_stack(4)[:-1],
+            )
+            self._func_cache.pop(func_cache_id)
+            await self.queue_response(
+                None,
+                "NOTOK",
+                DumpLoad.dump(re),
+                replystream,
+                local_id,
+                message_id,
+                stream,
+            )
+            self._current_tasks -= 1
+            return
+
         func_serialized = (
             isinstance(self._pool, ProcessPoolExecutor) or not func_cache_id
         )

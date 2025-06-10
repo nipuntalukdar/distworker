@@ -15,6 +15,7 @@ import pandas as pd
 
 from distworker.dumpload import DumpLoad
 from distworker.redis_stream import RedisStream
+from distworker.utils import get_configs_from_file, get_redis_url
 
 logger = logging.getLogger("driver")
 keep_running = True
@@ -67,7 +68,7 @@ def my_fun(x: int, y: int) -> int:
 
 def my_fun2(num):
     # simulate a long running task
-    sleep(60)
+    sleep(10)
     return "even" if num % 2 == 0 else "odd"
 
 
@@ -212,7 +213,10 @@ async def main(consumer_grp: str, reply_stream: str):
     for sig in signal.SIGTERM, signal.SIGINT:
         asyncio.get_event_loop().add_signal_handler(sig, handle_error_interrupt)
     try:
+        configs = get_configs_from_file("/usr/share/distworker/client_configs.json")
+        redis_url = get_redis_url(configs)
         rs = await RedisStream.create(
+            redis_url=redis_url,
             task_streams={TASK_STREAM: {"maxlen": 100}},
             respone_handler=my_response_hanlder,
         )

@@ -415,6 +415,10 @@ class RedisStream:
             logger.exception("Problem in setting value and expiry")
             return False
 
+    async def hkey_expiretime(self, hkey, key):
+        _, expiretime = await self._redis.hexpiretime(hkey, key)
+        return expiretime
+
     async def getval_expiry(self, key) -> Tuple[Union[str, None], Union[str, None]]:
         try:
             async with self._redis.pipeline() as pipe:

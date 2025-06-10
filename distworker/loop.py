@@ -13,6 +13,7 @@ from cachetools import TTLCache
 
 from .dumpload import DumpLoad
 from .redis_stream import RedisStream
+from .utils import get_redis_url
 
 LR = None
 FAILED = False
@@ -159,8 +160,6 @@ async def update_expire(stream: str, ttl: int, rs: RedisStream):
 
 async def main(configs: Dict[str, Any], loop):
     global LR, FAILED
-    redis_host = configs.get("redis_host", "127.0.0.1")
-    redis_port = configs.get("redis_port", 6379)
     taskstream = configs.get("task_streams", {"tasks": {"maxlen": 100}})
     taskgroup = configs.get("taskgroup", "taskgroup")
     reply_stream = configs.get("reply_stream", "replystream")
@@ -168,9 +167,8 @@ async def main(configs: Dict[str, Any], loop):
     reply_consumer_group = configs.get("reply_consumer_group", "reply_consumer_group")
     reply_stream_alive_time = configs.get("reply_stream_alive_time", 3600)
     last_error_time = time()
-
     response_handler = StreamResponseHandler()
-    redis_url = f"redis://{redis_host}:{redis_port}"
+    redis_url = get_redis_url(configs)
 
     rs = await RedisStream.create(
         redis_url=redis_url,

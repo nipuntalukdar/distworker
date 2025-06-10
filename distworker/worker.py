@@ -121,9 +121,21 @@ class Worker:
             return None
 
         logger.debug(f"Redis {redis_url}")
-        redis_client: RedisStream = await RedisStream.create(
-            redis_url, task_streams_from_config, task_group
-        )
+        redis_ssl = worker_config.get("redis_ssl", False)
+        if not redis_ssl:
+            redis_client: RedisStream = await RedisStream.create(
+                redis_url, task_streams_from_config, task_group
+            )
+        else:
+            redis_client: RedisStream = await RedisStream.create(
+                redis_url,
+                task_streams_from_config,
+                task_group,
+                ssl_ca_certs=worker_config.get("ssl_ca_certs"),
+                ssl_certfile=worker_config.get("ssl_certfile"),
+                ssl_keyfile=worker_config.get("ssl_keyfile"),
+            )
+
         if not redis_client:
             logger.error("Unable to get redis client")
             return None

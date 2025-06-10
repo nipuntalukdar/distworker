@@ -62,11 +62,22 @@ async def main():
     task_streams = {"tasks1": {"maxlen": 100}}
     configs = get_configs_from_file("/usr/share/distworker/client_configs.json")
     redis_url = get_redis_url(configs)
-    rs = await RedisStream.create(
-        redis_url=redis_url,
-        task_streams=task_streams,
-        respone_handler=my_response_hanlder,
-    )
+    redis_ssl = configs.get("redis_ssl")
+    if not redis_ssl:
+        rs = await RedisStream.create(
+            redis_url=redis_url,
+            task_streams=task_streams,
+            respone_handler=my_response_hanlder,
+        )
+    else:
+        rs = await RedisStream.create(
+            redis_url=redis_url,
+            task_streams=task_streams,
+            respone_handler=my_response_hanlder,
+            ssl_ca_certs=configs.get("ssl_ca_certs"),
+            ssl_certfile=configs.get("ssl_certfile"),
+            ssl_keyfile=configs.get("ssl_keyfile"),
+        )
     await rs.create_stream("astream", "agroup")
     while not STOPPED:
         logger.debug("Dequeing responses")

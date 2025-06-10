@@ -18,5 +18,9 @@
       "maxlen": 100
     }
   },
-  "client_cache_prefix": "client_1"
+  "client_cache_prefix": "client_1",
+  "redis_ssl": true,
+  "ssl_ca_certs": "/usr/share/distworker/tls/ca.crt",
+  "ssl_certfile": "/usr/share/distworker/tls/client.crt",
+  "ssl_keyfile": "/usr/share/distworker/tls/client.key"
 }

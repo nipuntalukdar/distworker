@@ -169,13 +169,25 @@ async def main(configs: Dict[str, Any], loop):
     last_error_time = time()
     response_handler = StreamResponseHandler()
     redis_url = get_redis_url(configs)
+    redis_ssl = configs.get("redis_ssl", False)
+    if not redis_ssl:
+        rs = await RedisStream.create(
+            redis_url=redis_url,
+            task_streams=taskstream,
+            task_group=taskgroup,
+            respone_handler=response_handler,
+        )
+    else:
+        rs = await RedisStream.create(
+            redis_url=redis_url,
+            task_streams=taskstream,
+            task_group=taskgroup,
+            respone_handler=response_handler,
+            ssl_ca_certs=configs.get("ssl_ca_certs"),
+            ssl_keyfile=configs.get("ssl_keyfile"),
+            ssl_certfile=configs.get("ssl_certfile"),
+        )
 
-    rs = await RedisStream.create(
-        redis_url=redis_url,
-        task_streams=taskstream,
-        task_group=taskgroup,
-        respone_handler=response_handler,
-    )
     if not rs:
         FAILED = True
         EVENT.set()

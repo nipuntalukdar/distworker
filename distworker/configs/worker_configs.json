@@ -18,5 +18,9 @@
   "taskgroup": "taskgroup",
   "min_idle_time_pending": 120000,
   "max_wait_milli_second": 10000,
-  "min_idle_time_pending_c_disappeared": 1200000
+  "min_idle_time_pending_c_disappeared": 1200000,
+  "redis_ssl": true,
+  "ssl_ca_certs": "/usr/share/distworker/tls/ca.crt",
+  "ssl_certfile": "/usr/share/distworker/tls/client.crt",
+  "ssl_keyfile": "/usr/share/distworker/tls/client.key"
 }

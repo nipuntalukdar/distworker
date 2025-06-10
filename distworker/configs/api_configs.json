@@ -4,5 +4,9 @@
   "taskstream": "tasks",
   "taskgroup": "taskgroup",
   "listen_host": "0.0.0.0",
-  "listen_port": 8989
+  "listen_port": 8989,
+  "redis_ssl": true,
+  "ssl_ca_certs": "/usr/share/distworker/tls/ca.crt",
+  "ssl_certfile": "/usr/share/distworker/tls/client.crt",
+  "ssl_keyfile": "/usr/share/distworker/tls/client.key"
 }

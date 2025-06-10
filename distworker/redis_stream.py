@@ -45,6 +45,9 @@ class RedisStream:
         maxlen: int = 100,
         worker_response_queue: asyncio.Queue = None,
         respone_handler: Callable = None,
+        ssl_ca_certs: str = None,
+        ssl_certfile: str = None,
+        ssl_keyfile: str = None,
     ) -> Self:
         retry_strategy = Retry(
             ExponentialBackoff(
@@ -64,14 +67,27 @@ class RedisStream:
             BusyLoadingError,
             ConnectionRefusedError,
         ]
-        redis_client = await redis.StrictRedis.from_url(
-            redis_url,
-            retry=retry_strategy,
-            retry_on_error=retry_on_errors,
-            socket_connect_timeout=20,
-            socket_timeout=20,
-            health_check_interval=40,
-        )
+        if ssl_ca_certs:
+            redis_client = await redis.StrictRedis.from_url(
+                redis_url,
+                retry=retry_strategy,
+                retry_on_error=retry_on_errors,
+                socket_connect_timeout=20,
+                socket_timeout=20,
+                health_check_interval=40,
+                ssl_ca_certs=ssl_ca_certs,
+                ssl_keyfile=ssl_keyfile,
+                ssl_certfile=ssl_certfile,
+            )
+        else:
+            redis_client = await redis.StrictRedis.from_url(
+                redis_url,
+                retry=retry_strategy,
+                retry_on_error=retry_on_errors,
+                socket_connect_timeout=20,
+                socket_timeout=20,
+                health_check_interval=40,
+            )
         connection_attempts = 10
         for i in range(connection_attempts):
             failed = False

@@ -41,10 +41,14 @@ def get_redis_url(configs: Dict[str, Any]) -> str:
     redis_host = configs.get("redis_host", "127.0.0.1")
     redis_port = configs.get("redis_port", 6379)
     redis_password = getenv("REDIS_PASSWORD", "")
+    redis_ssl = configs.get("redis_ssl", False)
+    redis_prefix = "redis"
+    if redis_ssl:
+        redis_prefix = "rediss"
     if redis_password:
-        redis_url = f"redis://:{redis_password}@{redis_host}:{redis_port}"
+        redis_url = f"{redis_prefix}://:{redis_password}@{redis_host}:{redis_port}"
     else:
-        redis_url = f"redis://{redis_host}:{redis_port}"
+        redis_url = f"{redis_prefix}://{redis_host}:{redis_port}"
     return redis_url
 
 
